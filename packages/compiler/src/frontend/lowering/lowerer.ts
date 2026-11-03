@@ -8007,7 +8007,9 @@ export class Lowerer {
                 this.runtimeOptionalBindingTypes.set(symbol, widened);
                 const global = this.globalsBySymbol.get(symbol);
                 if (global) {
-                  global.type = widened;
+                  // A lexical global in its temporal dead zone keeps record,
+                  // function, or checked-value storage; reads map the same way.
+                  global.type = tdzStorage(global, widened);
                   this.runtimeOptionalGlobals.add(global);
                 }
               }
