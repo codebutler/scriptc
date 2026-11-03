@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-destructured-callable-globals/factory.js",
+  "<repo>/tests/corpus/js-destructured-callable-globals/main.ts"
+ ],
+ "diags": []
+}
