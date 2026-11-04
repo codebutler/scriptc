@@ -70,6 +70,9 @@ export interface LlStreamTypedRefAdapter {
   arrayOps?: string;
   /** `@sym` of the ScrDynTypedRecordOps table for live record capsules. */
   recordOps?: string;
+  /** `@sym` of the ScrDynTypedIndexOps table for live index-signature
+   * record capsules. */
+  indexOps?: string;
   /** `@sym` of the ScrDynTypedClassOps table for class instance capsules. */
   classOps?: string;
   /** `@sym` of the ScrDynTypedBagClassOps table for capsules of bag-tracked

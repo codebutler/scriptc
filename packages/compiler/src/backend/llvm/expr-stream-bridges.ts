@@ -1155,6 +1155,12 @@ export function streamTypedRefMaterializeAdapter(
       shapeHasAccessorSlots(shape) ||
       shape.fields.some((field) => field.name === "handleEvent" && field.type.kind === "func");
     if (ordinary) {
+      // A pure index-signature record answers the keys it holds one at a
+      // time (liveIndexOps); its snapshot stays the ordinary converter.
+      if (liveIndexOpsEligible(host, t, shape)) {
+        adapter.indexOps = `@${snapshot}_iops`;
+        liveIndexOps(host, t, snapshot, shape);
+      }
       const out = B.tmp();
       B.line(`${out} = call ptr @${host.dyn.toDynHelper(t)}(ptr %p)`);
       B.terminate(`ret ptr ${out}`);
@@ -1367,6 +1373,81 @@ export function streamTypedRefMaterializeAdapter(
   );
   host.journal?.built();
   return adapter;
+}
+
+/** Whether a record type's live capsule gets per-key hooks
+ * (liveIndexOps): a pure index-signature record (no declared fields, no
+ * accessor slots), whose snapshot is the ordinary converter's copy of its
+ * overflow map. A copy linked to its source converts as its composed
+ * record, so it keeps the snapshot. A cycle-capable record's snapshot
+ * converts inside the converter's cycle guard, which a nested value's
+ * conversion can reach again; values that convert without recursion
+ * (checked-dynamic values, which the snapshot shares, and primitives)
+ * never do, so such records take the hooks whatever their value type's
+ * reach. */
+function liveIndexOpsEligible(
+  host: LlvmEmitterContext,
+  t: IrType & { kind: "record" },
+  shape: IrRecordShape,
+): boolean {
+  const iv = shape.indexValue;
+  if (iv === undefined || shape.fields.length > 0 || shape.tuple) return false;
+  if (shapeHasAccessorSlots(shape)) return false;
+  if ((host.shapeHost.recordLinks ?? []).some((link) => link.to === t.shapeId)) return false;
+  const flat = iv.kind === "dyn" || iv.kind === "f64" || iv.kind === "bool" || iv.kind === "string";
+  return flat || traceAdapter(host.shapeHost, t) === null;
+}
+
+/** Per-key hooks for a live index-signature record capsule
+ * (ScrDynTypedIndexOps). The snapshot copies every key of the overflow map,
+ * so a keyed read that materialized it would cost the whole record; `get`
+ * converts the one value at a key exactly as one step of the snapshot's
+ * overflow walk does (LlDyn.overflowValueToDyn), and `has` tests the key.
+ * Both answer only for keys the map holds; the runtime keeps the snapshot
+ * path for the others. */
+function liveIndexOps(
+  host: LlvmEmitterContext,
+  t: IrType & { kind: "record" },
+  snapshot: string,
+  shape: IrRecordShape,
+): void {
+  const iv = shape.indexValue!;
+  const struct = mangleRecordStruct(t.shapeId);
+  const slot = shape.fields.length + host.nullableUnions.fieldBase(t.shapeId);
+  const overflow = (B: BlockBuilder): string => {
+    const ovfp = B.tmp();
+    const ovf = B.tmp();
+    B.line(`${ovfp} = getelementptr inbounds %${struct}, ptr %p, i64 0, i32 ${slot}`);
+    B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
+    return ovf;
+  };
+
+  const G = new BlockBuilder();
+  const absent = G.newLabel("live.index.absent");
+  const { boxed, release } = host.dyn.overflowValueToDyn(G, iv, overflow(G), "%k", absent);
+  if (release !== null) G.line(release);
+  G.terminate(`ret ptr ${boxed}`);
+  G.startBlock(absent);
+  G.terminate(`ret ptr null`);
+
+  const H = new BlockBuilder();
+  host.declare(`declare zeroext i1 @scr_map_has_str(ptr, ptr)`);
+  const has = H.tmp();
+  H.line(`${has} = call zeroext i1 @scr_map_has_str(ptr ${overflow(H)}, ptr %k)`);
+  H.terminate(`ret i1 ${has}`);
+
+  host.resolveThunkDefs.push(
+    `define internal ptr @${snapshot}_iget(ptr %p, ptr %k) ${FN_ATTRS} { ; live index read of ${typeKey(t)}`,
+    G.render(),
+    `}`,
+    ``,
+    `define internal zeroext i1 @${snapshot}_ihas(ptr %p, ptr %k) ${FN_ATTRS} { ; live index presence of ${typeKey(t)}`,
+    H.render(),
+    `}`,
+    ``,
+    `@${snapshot}_iops = internal constant { ptr, ptr } { ptr @${snapshot}_iget, ptr @${snapshot}_ihas }`,
+    ``,
+  );
 }
 
 /** Per-element hooks for a live array capsule (ScrDynTypedArrayOps). The
@@ -1924,10 +2005,10 @@ function liveBagClassOps(
 
 /** The live view a capsule of this adapter binds: the runtime bind call
  * and its ops constant, with the view code a deferred receiver recipe
- * records (1 array, 2 record, 3 class, 4 bag-tracked class). */
+ * records (1 array, 2 record, 3 class, 4 bag-tracked class, 5 index). */
 export function liveRefView(
   adapter: LlStreamTypedRefAdapter,
-): { bind: string; ops: string; code: 1 | 2 | 3 | 4 } | null {
+): { bind: string; ops: string; code: 1 | 2 | 3 | 4 | 5 } | null {
   if (adapter.classOps !== undefined)
     return { bind: "scr_dyn_typed_ref_bind_class", ops: adapter.classOps, code: 3 };
   if (adapter.bagClassOps !== undefined)
@@ -1936,6 +2017,8 @@ export function liveRefView(
     return { bind: "scr_dyn_typed_ref_bind_record", ops: adapter.recordOps, code: 2 };
   if (adapter.arrayOps !== undefined)
     return { bind: "scr_dyn_typed_ref_bind_array", ops: adapter.arrayOps, code: 1 };
+  if (adapter.indexOps !== undefined)
+    return { bind: "scr_dyn_typed_ref_bind_index", ops: adapter.indexOps, code: 5 };
   return null;
 }
 
