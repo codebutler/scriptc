@@ -3447,6 +3447,74 @@ export class LlDyn {
   /** `sc_td_<n>(<T> v) -> ptr` — build a fresh dyn value from a
    * static one (+1), DEEP-COPYING composites. Borrows the operand.
    * Never throws. */
+  /** The +1 dyn value an index-signature record's overflow map `ovf`
+   * holds at string key `k`, converted as the record's snapshot converts
+   * it (one entry of its overflow walk; the live view's key hook reads one
+   * key the same way, expr-stream-bridges.ts liveIndexOps). `release` is
+   * the line that drops the native value once the dyn value is stored, or
+   * null. With `absent` a label, a key the map lacks branches there before
+   * anything is converted; with null the key is known to be present. */
+  overflowValueToDyn(
+    B: BlockBuilder,
+    iv: IrType,
+    ovf: string,
+    k: string,
+    absent: string | null,
+  ): { boxed: string; release: string | null } {
+    const host = this.host;
+    const present = (found: string): void => {
+      if (absent === null) return;
+      const hit = B.newLabel("ovf.present");
+      B.condBr(found, hit, absent);
+      B.startBlock(hit);
+    };
+    if (iv.kind === "f64" || iv.kind === "bool") {
+      const outTy = iv.kind === "f64" ? "double" : "i8";
+      const outSlot = B.slot();
+      B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
+      B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
+      host.declare(
+        `declare zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr, ptr, ptr)`,
+      );
+      const found = B.tmp();
+      B.line(
+        `${found} = call zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr ${ovf}, ptr ${k}, ptr ${outSlot})`,
+      );
+      present(found);
+      const raw = B.tmp();
+      B.line(`${raw} = load ${outTy}, ptr ${outSlot}`);
+      let val = raw;
+      if (iv.kind === "bool") {
+        val = B.tmp();
+        B.line(`${val} = trunc i8 ${raw} to i1`);
+      }
+      const boxed = B.tmp();
+      if (iv.kind === "f64") {
+        host.declare(`declare ptr @scr_dyn_new_num(double)`);
+        B.line(`${boxed} = call ptr @scr_dyn_new_num(double ${val})`);
+      } else {
+        host.declare(`declare ptr @scr_dyn_new_bool(i1 zeroext)`);
+        B.line(`${boxed} = call ptr @scr_dyn_new_bool(i1 ${val})`);
+      }
+      return { boxed, release: null };
+    }
+    // get_str_ref returns +1, or null for a key the map lacks (stored
+    // values are never null).
+    host.declare(`declare ptr @scr_map_get_str_ref(ptr, ptr)`);
+    const hit = B.tmp();
+    B.line(`${hit} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k})`);
+    if (absent !== null) {
+      const found = B.tmp();
+      B.line(`${found} = icmp ne ptr ${hit}, null`);
+      present(found);
+    }
+    // A dyn value is already the +1 reference obj_set takes.
+    if (iv.kind === "dyn") return { boxed: hit, release: null };
+    const conv = B.tmp();
+    B.line(`${conv} = call ptr @${this.toDynHelper(iv)}(ptr ${hit})`);
+    return { boxed: conv, release: `call void ${releaseSym(host, iv)}(ptr ${hit})` };
+  }
+
   toDynHelper(t: IrType): string {
     const key = typeKey(t);
     const existing = this.toDynFns.get(key);
@@ -3813,55 +3881,11 @@ export class LlDyn {
             const k = B.tmp();
             B.line(`${k} = call ptr @scr_arr_get_ref(ptr ${ks}, double ${i}) ; key (+1)`);
             const { len: klen, data: kdata } = this.strParts(B, k);
-            if (iv.kind === "f64" || iv.kind === "bool") {
-              const outTy = iv.kind === "f64" ? "double" : "i8";
-              const outSlot = B.slot();
-              B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
-              B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
-              host.declare(
-                `declare zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr, ptr, ptr)`,
-              );
-              const found = B.tmp();
-              B.line(
-                `${found} = call zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr ${ovf}, ptr ${k}, ptr ${outSlot})`,
-              );
-              const raw = B.tmp();
-              B.line(`${raw} = load ${outTy}, ptr ${outSlot}`);
-              let val = raw;
-              if (iv.kind === "bool") {
-                val = B.tmp();
-                B.line(`${val} = trunc i8 ${raw} to i1`);
-              }
-              const boxed = B.tmp();
-              if (iv.kind === "f64") {
-                host.declare(`declare ptr @scr_dyn_new_num(double)`);
-                B.line(`${boxed} = call ptr @scr_dyn_new_num(double ${val})`);
-              } else {
-                host.declare(`declare ptr @scr_dyn_new_bool(i1 zeroext)`);
-                B.line(`${boxed} = call ptr @scr_dyn_new_bool(i1 ${val})`);
-              }
-              B.line(
-                `call void @scr_dyn_obj_set(ptr ${d}, ptr ${kdata}, ${host.sizeType} ${klen}, ptr ${boxed})`,
-              );
-            } else if (iv.kind === "dyn") {
-              // get_str_ref returns +1 — exactly the ownership obj_set takes.
-              host.declare(`declare ptr @scr_map_get_str_ref(ptr, ptr)`);
-              const hit = B.tmp();
-              B.line(`${hit} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k})`);
-              B.line(
-                `call void @scr_dyn_obj_set(ptr ${d}, ptr ${kdata}, ${host.sizeType} ${klen}, ptr ${hit})`,
-              );
-            } else {
-              host.declare(`declare ptr @scr_map_get_str_ref(ptr, ptr)`);
-              const hit = B.tmp();
-              B.line(`${hit} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k})`);
-              const conv = B.tmp();
-              B.line(`${conv} = call ptr @${this.toDynHelper(iv)}(ptr ${hit})`);
-              B.line(
-                `call void @scr_dyn_obj_set(ptr ${d}, ptr ${kdata}, ${host.sizeType} ${klen}, ptr ${conv})`,
-              );
-              B.line(`call void ${releaseSym(host, iv)}(ptr ${hit})`);
-            }
+            const { boxed, release } = this.overflowValueToDyn(B, iv, ovf, k, null);
+            B.line(
+              `call void @scr_dyn_obj_set(ptr ${d}, ptr ${kdata}, ${host.sizeType} ${klen}, ptr ${boxed})`,
+            );
+            if (release !== null) B.line(release);
             B.line(`call void @scr_str_release(ptr ${k})`);
           });
           B.line(`call void @scr_arr_release(ptr ${ks})`);

@@ -460,6 +460,20 @@ typedef struct ScrDynTypedRecordOps {
    * field whose storage it cannot replace (an inline union). */
   bool (*set)(void *rec, size_t index, const ScrDyn *value);
 } ScrDynTypedRecordOps;
+/* Key access for a live typed reference to a pure index-signature record
+ * (`Record<string, T>`, no declared fields), emitted per record type by the
+ * compiler. Its snapshot is an ordinary object whose own properties are the
+ * record's keys, and a refresh of a capsule's cached view always takes a
+ * key the record holds from the record (scr_dyn_typed_ref_materialize), so
+ * a present key answers the same with or without a view. Absent keys, whose
+ * answer can come from the view or the prototype chain, take the snapshot.
+ *   get: +1 dyn view of the value at `key`, built exactly as the snapshot
+ *        builds it, or NULL when the record has no such key;
+ *   has: whether the record holds `key`. */
+typedef struct ScrDynTypedIndexOps {
+  ScrDyn *(*get)(void *rec, const ScrStr *key);
+  bool (*has)(void *rec, const ScrStr *key);
+} ScrDynTypedIndexOps;
 /* A record capsule's ops while it answers from the native record (no view
  * created yet), or NULL. */
 const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
@@ -622,6 +636,13 @@ struct ScrDyn {
       uint32_t record : 1; /* `array` holds ScrDynTypedRecordOps */
       uint32_t klass : 1; /* `array` holds ScrDynTypedClassOps */
       uint32_t bag_class : 1; /* `array` holds ScrDynTypedBagClassOps */
+      /* `array` holds ScrDynTypedIndexOps. `record` is set with it, so code
+       * that reads `array` as element hooks unless a kind bit is set (the
+       * dynamic-tier caches included) leaves it alone; the record paths
+       * test this bit before reading `array` as ScrDynTypedRecordOps. The
+       * word above is full, so this bit sits in its own word, in what was
+       * the payload's tail padding. */
+      uint32_t index_record : 1;
     } typed_ref;
     /* SCR_DYN_PROMISE: the retained promise. The boundary contract: it
      * settles with a dyn payload (SCR_EXC_REF ScrDyn fulfillment or a
@@ -1459,6 +1480,10 @@ void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops);
  * for-in, Object.keys/values/entries, typeof and Array.isArray answer from
  * the native record, creating only the field values they return. */
 void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
+/* Attach key access to a live index-signature record capsule (idempotent).
+ * Keyed reads of keys the record holds, and `in`/hasOwn of them, then
+ * answer from the record instead of rebuilding the whole snapshot. */
+void scr_dyn_typed_ref_bind_index(ScrDyn *d, const ScrDynTypedIndexOps *ops);
 /* Undeclared properties of checked records (scr_json.c). The checked
  * record builder notes its source object; a record whose source had own
  * properties the shape does not declare keeps them, in own-key order, in a
@@ -2470,7 +2495,8 @@ void scr_dyn_this_push_dyn_once(const ScrDyn *v);
 /* A class's typed-ref construction recipe, emitted once per class as a
  * constant (kind: 0 plain, 1 observed, 2 traced capsule). `view` names the
  * live view bound to the new capsule, as eager boxing binds it: 0 none,
- * 1 array ops, 2 record ops, 3 class ops (`ops`). */
+ * 1 array ops, 2 record ops, 3 class ops, 4 bag-tracked class ops, 5 index
+ * ops (`ops`). */
 typedef struct ScrDynTypedRefRecipe {
   void *(*retain)(void *);
   void (*release)(void *);

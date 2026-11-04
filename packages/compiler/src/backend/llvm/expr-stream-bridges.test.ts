@@ -157,6 +157,61 @@ test("live record capsules bind field hooks in snapshot order", () => {
   );
 });
 
+test("index-signature record capsules bind key hooks", () => {
+  const loc = { file: "live-references.ts", start: 0, end: 0 };
+  const records: IrModule["records"] = [
+    { id: "dynValues", fields: [], indexValue: DYN },
+    { id: "numbers", fields: [], indexValue: { kind: "f64" } },
+    { id: "rows", fields: [{ name: "name", type: STRING }] },
+    { id: "nested", fields: [], indexValue: { kind: "record", shapeId: "rows" } },
+    { id: "node", fields: [], indexValue: { kind: "record", shapeId: "node" } },
+  ];
+  const box = (shapeId: string): IrFunction => {
+    const type: IrType = { kind: "record", shapeId };
+    return {
+      name: `box_${shapeId}`,
+      params: [{ name: "value", localId: "value", type }],
+      returnType: DYN,
+      locals: [{ id: "value", name: "value", type, mutable: false }],
+      loc,
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "dynFrom",
+            value: { kind: "varRef", localId: "value", type, loc },
+            liveRef: true,
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+    };
+  };
+  const module: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    records,
+    unions: [],
+    functions: [
+      { name: "main", params: [], returnType: VOID, locals: [], body: [], loc },
+      ...["dynValues", "numbers", "nested", "node"].map(box),
+    ],
+  };
+  for (const pointerBits of [32, 64] as const) {
+    const llvm = emitLlvmModule(module, { pointerBits });
+    const reads = [...llvm.matchAll(/; live index read of (\S+)$/gm)].map((match) => match[1]);
+    // A self-recursive record's values convert inside the snapshot's cycle
+    // guard, so it keeps the snapshot for every read.
+    expect(reads.sort()).toEqual(["record:dynValues", "record:nested", "record:numbers"]);
+    expect(llvm).toMatch(/; live index presence of record:numbers$/m);
+    expect(llvm).toMatch(/^@\S+_iops = internal constant \{ ptr, ptr \} /m);
+    expect(llvm.match(/call void @scr_dyn_typed_ref_bind_index\(/g)?.length).toBeGreaterThan(0);
+  }
+});
+
 test("class instance capsules bind prototype member names by exact class", () => {
   const loc = { file: "live-references.ts", start: 0, end: 0 };
   const base: IrType = { kind: "object", className: "Base" };
