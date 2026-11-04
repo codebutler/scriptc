@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/number-or-bigint-constructor-ternary.ts"
+ ],
+ "diags": []
+}

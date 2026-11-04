@@ -2711,8 +2711,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // signature — the string-coercion form `(value: string) => primitive`.
   // String(s) is identity on strings, Number(s) the ECMA StringToNumber,
   // Boolean(s) emptiness — the parsed-token shape every stored-constructor
-  // call feeds. Calls passing other argument types fence at their site
-  // (the func param coercion), exactly like any other typed closure slot.
+  // call feeds. A function slot taking another argument type converts the
+  // constructor to its any-argument form where the value is adapted to the
+  // slot (dynPrimitiveCtorForSlot, and the adapter's identity dispatch for
+  // a stored constructor value).
   // Provenance-gated like the boxed wrappers above: a user's own
   // `interface StringConstructor` maps as a record.
   {
