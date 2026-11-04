@@ -4066,3 +4066,30 @@ export function primitiveCtorClosure(
   }
   return { kind: "closure", fnName, captures: [], type: fnT, loc };
 }
+
+/** The checked-dynamic form of a primitive-constructor VALUE about to be
+ * adapted into a function slot whose first parameter is not a string: the
+ * string-input closure (primitiveCtorClosure's typed ABI) would narrow the
+ * slot's argument to a string and throw for every other type, but the
+ * constructor converts any argument (`Number(7n)`, `String(7)`,
+ * `Boolean(0)`), and the dyn-input closure does what it does. The slot
+ * already receives a fresh adapter closure, so the value had no function
+ * identity left to keep. Null for any other value, for a slot taking a
+ * string (the typed ABI fits it exactly), and for a slot taking no
+ * parameter: `Number()` is 0 where `Number(undefined)` is NaN, so the
+ * dyn closure cannot stand in for a call without an argument. */
+export function dynPrimitiveCtorForSlot(
+  lowerer: Lowerer,
+  expr: IrExpr,
+  expected: IrType,
+): IrExpr | null {
+  if (expr.kind !== "closure" || expected.kind !== "func" || expected.rest === true) return null;
+  if (expr.type.kind !== "func" || !typeEquals(expr.type.params[0] ?? VOID, STRING)) return null;
+  const first = expected.params[0];
+  if (first === undefined || typeEquals(first, STRING)) return null;
+  for (const name of ["String", "Number", "Boolean"] as const) {
+    if (lowerer.primitiveCtorFns.get(`${name}:string`) === expr.fnName)
+      return primitiveCtorClosure(lowerer, name, expr.loc, true);
+  }
+  return null;
+}

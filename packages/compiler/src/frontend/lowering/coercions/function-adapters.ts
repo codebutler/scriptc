@@ -4,10 +4,12 @@ import { buildFunctionAdapter } from "./builders.js";
 import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrParam, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import {
+  BOOL,
   canAdaptDynFuncTo,
   canDynCheckTo,
   DYN,
   F64,
+  funcOf,
   isUnitType,
   STRING,
   typeEquals,
@@ -359,6 +361,79 @@ function funcIntoDynRestAdapter(
   return name;
 }
 
+/** The primitive constructor a function value of `fromT` may be: `String`,
+ * `Number` and `Boolean` are stored in typed code as their string-input
+ * closures, `(value: string) => string | number | boolean`. */
+function primitiveCtorOfType(
+  fromT: IrType & { kind: "func" },
+): "String" | "Number" | "Boolean" | null {
+  if (fromT.rest === true) return null;
+  for (const [name, ret] of [
+    ["String", STRING],
+    ["Number", F64],
+    ["Boolean", BOOL],
+  ] as const) {
+    if (typeEquals(fromT, funcOf([STRING], ret))) return name;
+  }
+  return null;
+}
+
+/** The adapter's first statement when its function value may be a stored
+ * primitive constructor and the slot's first parameter is not a string
+ * (`let n: NumberConstructor` handed to a `(v: number | bigint) => number |
+ * bigint` parameter): when the value IS the constructor's interned string-
+ * input closure, call the constructor's form that converts any argument
+ * instead, since the string-input form would narrow the argument to a
+ * string and throw for every other type. Any other function of the same
+ * signature keeps the ordinary adaptation after it. Null when the pair
+ * does not take it (a slot taking a string or no parameter: see
+ * dynPrimitiveCtorForSlot). Runs in the adapter's function context. */
+function primitiveCtorDispatch(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): IrStmt | null {
+  const name = primitiveCtorOfType(fromT);
+  const first = toT.params[0];
+  if (name === null || toT.rest === true || first === undefined || typeEquals(first, STRING))
+    return null;
+  if (!typeEquals(first, DYN) && !lowerer.coercibleValue(first, DYN)) return null;
+  const ret = fromT.ret;
+  if (toT.ret.kind !== "void" && !lowerer.coercibleValue(ret, toT.ret)) return null;
+  const arg = lowerer.coerceToExpected({ kind: "varRef", localId: "a.0", type: first, loc }, DYN);
+  if (!typeEquals(arg.type, DYN)) return null;
+  const call: IrExpr = {
+    kind: "callValue",
+    callee: lowerer.primitiveCtorValue(name, loc, true),
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args: [arg],
+    type: ret,
+    loc,
+  };
+  const result = toT.ret.kind === "void" ? null : lowerer.coerceToExpected(call, toT.ret);
+  if (result && !typeEquals(result.type, toT.ret)) return null;
+  return {
+    kind: "if",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "varRef", localId: "f.0", type: fromT, loc },
+      right: lowerer.primitiveCtorValue(name, loc, false),
+      type: BOOL,
+      loc,
+    },
+    then: result
+      ? [{ kind: "return", value: result, loc }]
+      : [
+          { kind: "exprStmt", expr: call, loc },
+          { kind: "return", value: null, loc },
+        ],
+    else_: null,
+    loc,
+  };
+}
+
 /** Adapt a function value to a destination signature, forwarding and
  * converting its arguments and result. Unsupported parameter/result pairs
  * produce checked traps when called. Rest signatures are refused, except a
@@ -524,6 +599,7 @@ export function funcCoerceAdapter(
   let body: IrStmt[];
   lowerer.fnStack.push(context);
   try {
+    const ctorDispatch = primitiveCtorDispatch(lowerer, fromT, toT, loc);
     if (strandParams) {
       body = [
         strandThrow(
@@ -613,6 +689,7 @@ export function funcCoerceAdapter(
         body = [{ kind: "return", value: result, loc }];
       }
     }
+    if (ctorDispatch) body = [ctorDispatch, ...body];
   } finally {
     lowerer.fnStack.pop();
   }

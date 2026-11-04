@@ -777,6 +777,8 @@ import {
   lowerFieldCompound,
   uniqueSymbolKeyOf,
   matchCallbackParamGroupsOf,
+  dynPrimitiveCtorForSlot,
+  primitiveCtorClosure,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -13568,6 +13570,15 @@ export class Lowerer {
         return { kind: "call", callee: adapter, args: [expr], type: expected, loc: expr.loc };
       }
     }
+    // `String`, `Number` or `Boolean` as a value in a slot whose parameter
+    // is not a string (`bits == 32 ? Number : BigInt` as a `(v: number |
+    // bigint) => number | bigint`): the constructor's form that converts any
+    // argument, which the adapters below then wrap like any dyn-taking
+    // function.
+    if (expected.kind === "func" && !typeEquals(expr.type, expected)) {
+      const dynCtor = dynPrimitiveCtorForSlot(this, expr, expected);
+      if (dynCtor) return this.coerceToExpected(dynCtor, expected);
+    }
     const covariant = this.coerceCovariantFunction(expr, expected);
     if (covariant) return covariant;
     // The GENERAL function-value adapter (funcCoerceAdapter): a function
@@ -14000,6 +14011,15 @@ export class Lowerer {
     loc: SrcLoc,
   ): string | null {
     return funcCoerceAdapter(this, fromT, toT, loc);
+  }
+
+  /** The interned primitive-constructor closure (primitiveCtorClosure). */
+  primitiveCtorValue(
+    name: "String" | "Number" | "Boolean",
+    loc: SrcLoc,
+    dynamicInput: boolean,
+  ): IrExpr {
+    return primitiveCtorClosure(this, name, loc, dynamicInput);
   }
 
   spawnResFnAdapterPlan(
