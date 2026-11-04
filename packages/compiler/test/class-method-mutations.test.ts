@@ -160,12 +160,47 @@ test("a store into a dictionary of dictionaries leaves method calls direct", asy
   expect(await callersOf(dictionaries, "%dyn.class.properties")).toEqual([]);
 });
 
-test("a store into a dictionary whose values can be functions keeps checked dispatch", async () => {
+// A dictionary whose values can be functions is still a native record unless
+// it is a view of an existing object: converting a class instance into it
+// copies the instance's fields, so the store reaches the copy and never a
+// method slot.
+test("a store into a dictionary whose values can be functions leaves method calls direct", async () => {
   const source = dictionaries.replace(
     "Record<string, Record<string, string>>",
     "Record<string, Record<string, string> | (() => number)>",
   );
-  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+  expect(await callersOf(source, "%dyn.class.properties")).toEqual([]);
+});
+
+test("a nested store into a dictionary of functions or instances leaves method calls direct", async () => {
+  const source = `
+type Fn = (...args: unknown[]) => unknown;
+class Entry { hits = 0; }
+class Counter {
+  n = 0;
+  add(): number { return ++this.n; }
+}
+function imports(): { module: string; name: string }[] {
+  return [{ module: "env", name: "memory" }];
+}
+const tables: Record<string, Record<string, Fn | Entry>> = { env: {} };
+for (const imp of imports()) tables[imp.module]![imp.name] = new Entry();
+const counter = new Counter();
+console.log(counter.add(), Object.keys(tables["env"]!));
+`;
+  expect(await callersOf(source, "%dyn.class.properties")).toEqual([]);
+});
+
+test("a store into a dictionary of open objects keeps checked dispatch", async () => {
+  // A dictionary of `object` values is checked-dynamic: it keeps the
+  // identity of an instance it receives, so a store can replace a method.
+  for (const values of ["object", "object | (() => number)", "unknown"]) {
+    const source = dictionaries.replace(
+      "Record<string, Record<string, string>>",
+      `Record<string, Record<string, string> | ${values}>`,
+    );
+    expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+  }
 });
 
 test("a store into a generic dictionary of dictionaries keeps checked dispatch", async () => {

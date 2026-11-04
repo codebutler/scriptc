@@ -15,7 +15,7 @@ import { isJsSourceFile, locOf } from "../program.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { findMethodOn, type ClassInfo } from "./lower-classes.js";
-import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
+import { classMethodHolderHelper, classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { observedPrototypeMethod } from "./class-prototypes.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
@@ -69,8 +69,48 @@ function callbackBag(
   observedSlot(lowerer, receiver, name, loc);
   return {
     kind: "call",
-    callee: classPropertiesHelper(lowerer, loc, readOnly).name,
+    callee: (methodHolder(lowerer, receiver, name, loc, readOnly)
+      ? classMethodHolderHelper(lowerer, loc)
+      : classPropertiesHelper(lowerer, loc, readOnly)
+    ).name,
     args: [lowerer.coerceToExpected(receiver, DYN)],
+    type: DYN,
+    loc,
+  };
+}
+
+/** Whether a read of `name` on `receiver` looks the method up in the
+ * object classMethodHolderHelper answers rather than in the read-only bag:
+ * an observed slot of a native class instance. The holder of an instance
+ * without own properties is the prototype its bag would start from, so the
+ * read creates nothing; the read-only bag answers that case with a fresh
+ * object over the prototype, allocated and released on every call. The
+ * unobserved reads test for an own key, which a prototype would answer
+ * wrongly, so they keep the read-only bag. */
+function methodHolder(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  name: string,
+  loc: SrcLoc,
+  readOnly: boolean,
+): boolean {
+  return readOnly && receiver.type.kind === "object" && observedSlot(lowerer, receiver, name, loc);
+}
+
+/** The value of `key` in the callback bag `value`. A method holder is a
+ * plain property object (an own bag or a prototype), so the read is an
+ * ordinary lookup through its prototype chain with no receiver dispatch.
+ * A receiver whose class has no property-bag branch is answered by the
+ * untyped holder as the boxed instance itself, which only the dispatched
+ * read understands. */
+function bagRead(holder: boolean, value: IrExpr, key: IrExpr, loc: SrcLoc): IrExpr {
+  const dispatched: IrExpr = { kind: "dynKeyGet", value, key, type: DYN, loc };
+  if (!holder) return dispatched;
+  return {
+    kind: "ternary",
+    cond: { kind: "dynTest", test: "classCapsule", value, type: BOOL, loc },
+    then: dispatched,
+    else_: { kind: "libCall", fn: "dyn.bagGet", args: [value, key, value], type: DYN, loc },
     type: DYN,
     loc,
   };
@@ -130,8 +170,9 @@ export function classCallbackValue(
   const bag = lowerer.declareHiddenLocal("%callbackBag", DYN);
   const value = varRef(bag.id, DYN, loc);
   const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+  const holder = methodHolder(lowerer, receiver, name, loc, true);
   const result: IrExpr = observedSlot(lowerer, receiver, name, loc)
-    ? { kind: "dynKeyGet", value, key, type: DYN, loc }
+    ? bagRead(holder, value, key, loc)
     : {
         kind: "ternary",
         cond: callbackPresent(value, key, loc),
@@ -307,7 +348,7 @@ export function classCallbackCall(
           kind: "ternary",
           cond: { kind: "dynTest", test: "undefined", value, type: BOOL, loc },
           then: dynUndefinedExpr(loc),
-          else_: { kind: "dynKeyGet", value, key, type: DYN, loc },
+          else_: bagRead(methodHolder(lowerer, receiver, name, loc, true), value, key, loc),
           type: DYN,
           loc,
         },

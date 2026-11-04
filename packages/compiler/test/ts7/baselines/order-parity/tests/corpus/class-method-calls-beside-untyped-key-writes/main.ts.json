@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-method-calls-beside-untyped-key-writes/untyped.mjs",
+  "<repo>/tests/corpus/class-method-calls-beside-untyped-key-writes/main.ts"
+ ],
+ "diags": []
+}
