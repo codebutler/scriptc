@@ -1,0 +1,19 @@
+packages/compiler/src/frontend/lowering/class-dynamic-dispatch.ts
+  s_c50b2544a38862::t_fa88d609ec14cc 731-736,740,744
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a60fa444d522786822ab142d4bad33b54db5f3e3",
+  "prompts": {},
+  "sessions": {
+    "s_c50b2544a38862": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1abfa-ada8-7643-af2a-880abae5e723",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Eric Butler <eric@codebutler.com>"
+    }
+  }
+}
