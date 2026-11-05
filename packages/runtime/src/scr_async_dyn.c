@@ -1785,6 +1785,39 @@ ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader) {
   return scr_dyn_promise_entry(NULL, value, reader);
 }
 
+/* Dynamic executors need resolution rather than ref fulfillment. The
+ * resolving functions share their first-call state even while adoption is
+ * pending, so a later reject or executor throw cannot replace it. */
+ScrPromise *scr_dyn_promise_new(const ScrDyn *executor, const ScrDyn *reader) {
+  ScrPromise *promise = scr_promise_new();
+  ScrDynThenState *state = calloc(1, sizeof *state);
+  if (!state) scr_ad_oom();
+  state->rc = 1;
+  state->promise = scr_promise_retain(promise);
+  state->reader = reader ? scr_dyn_retain((ScrDyn *)reader) : NULL;
+  ScrBox *box = scr_box_new_obj(scr_dyn_then_state_retain_v, scr_dyn_then_state_release_v, NULL);
+  scr_box_set_ref(box, state);
+  ScrDyn *args[2] = {
+    scr_dyn_then_function(box, scr_dyn_then_resolve_call),
+    scr_dyn_then_function(box, scr_dyn_then_reject_call),
+  };
+  scr_dyn_this_push_dyn(scr_dyn_undefined());
+  ScrDyn *result = scr_dyn_call(executor, args, 2, "Promise executor");
+  scr_dyn_this_pop();
+  if (result) {
+    scr_dyn_release(result);
+  } else if (!state->called) {
+    state->called = true;
+    scr_promise_reject_pending(promise);
+  } else {
+    scr_exc_clear();
+  }
+  scr_dyn_release(args[0]);
+  scr_dyn_release(args[1]);
+  scr_box_release(box);
+  return promise;
+}
+
 void scr_dyn_promise_resolve_with(ScrPromise *target, ScrDyn *value) {
   scr_dyn_resolve_value(target, value, NULL);
 }
