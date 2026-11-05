@@ -1087,7 +1087,8 @@ const TDZ_KINDS = new Set<IrType["kind"]>([
  * declaration; a read before initialization throws ReferenceError. Model
  * exactly that: when a reference fails to resolve anywhere on the
  * function stack, look for its declaration LATER in an open statement
- * list — a const with an initializer, pointer-backed type — and
+ * list — an initialized lexical binding or an uninitialized JavaScript
+ * let, with a pointer-backed type — and
  * pre-declare it there as a TDZ box (varDecl init:null, boxed, tdz),
  * registered in the list's scope frame so resolution finds it and
  * threads captures normally. The source declaration later becomes the
@@ -1104,7 +1105,12 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     !ts.isIdentifier(decl.name)
   )
     return false;
-  if (!decl.initializer) return false;
+  const uninitializedJs =
+    decl.initializer === undefined &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    decl.type === undefined &&
+    !hasJsTypeAnnotation(decl);
+  if (!decl.initializer && !uninitializedJs) return false;
   const flags = ts.getCombinedNodeFlags(decl);
   if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Using) !== 0) return false;
   // `const E = EventEmitter` has no storage to box: uses resolve at
@@ -1132,7 +1138,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     if (idx < entry.index || entry.ctx === lowerer.ctx || entry.ctx.tdzPredeclared.has(symbol))
       return false;
     let type = lowerer.irTypeOf(decl.name);
+    if (uninitializedJs && type.kind === "dyn")
+      type = inferredEvolvingLetType(lowerer, decl) ?? type;
     if (
+      decl.initializer !== undefined &&
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       !hasJsTypeAnnotation(decl) &&
@@ -6628,8 +6637,20 @@ export function lowerVarDecl(
   // box stays pre-declared until the initializer lowers: a statement the
   // commit point lowers again (localized failure) initializes the same box.
   const pre = declSymbol ? lowerer.ctx.tdzPredeclared.get(declSymbol) : undefined;
-  if (pre && decl.initializer) {
-    const init = lowerer.lowerExprExpecting(decl.initializer, pre.type);
+  if (pre) {
+    // A JavaScript `let value;` initializes the already-captured TDZ box
+    // to undefined at the declaration, just as an explicit initializer.
+    const init = decl.initializer
+      ? lowerer.lowerExprExpecting(decl.initializer, pre.type)
+      : pre.type.kind === "dyn"
+        ? dynUndefinedExpr(locOf(decl))
+        : lowerer.unassignedSlotInit(pre.type, locOf(decl));
+    if (init === null)
+      lowerer.unsupported(
+        "SC1090",
+        decl,
+        "forward-captured declarations without a representable undefined value",
+      );
     lowerer.ctx.tdzPredeclared.delete(declSymbol!);
     return { kind: "assign", localId: pre.id, value: init, initializes: true, loc: locOf(decl) };
   }

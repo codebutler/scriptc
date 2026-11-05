@@ -1197,10 +1197,12 @@ export function lowerPropertyAccessExpr(
         : { kind: "strIntrinsic", method: "length", receiver: recv, args: [], type: F64, loc };
     }
   }
-  if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && expr.name.text === "constructor") {
+  // User-class instances retain their concrete constructor in the checked
+  // view, including when a TypeScript base-typed reference holds a subclass.
+  if (expr.name.text === "constructor") {
     const receiver = tryLowerExpression(lowerer, expr.expression);
     if (
-      receiver?.type.kind === "dyn" ||
+      (receiver?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) ||
       (receiver?.type.kind === "object" &&
         !lowerer.classes.get(receiver.type.className)?.fields.has("constructor"))
     ) {

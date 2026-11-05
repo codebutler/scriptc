@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/typed-unchanged-primitive-fields.ts"
+ ],
+ "diags": []
+}
