@@ -1,0 +1,24 @@
+tests/corpus/8217-intl-segmenter-word-construct/main.ts
+  s_c50b2544a38862::t_97d7c1181d4be9 1
+tests/corpus/5877-readline-question-query.cjs
+  s_c50b2544a38862::t_97d7c1181d4be9 46-50
+  s_c50b2544a38862::t_bf6233214b6646 4
+tests/corpus/7009-finalization-registry-wasm-loader/main.ts
+  s_c50b2544a38862::t_97d7c1181d4be9 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5c5067509795c8dcf79e9c14657b31beaf24ba06",
+  "prompts": {},
+  "sessions": {
+    "s_c50b2544a38862": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1abfa-ada8-7643-af2a-880abae5e723",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Eric Butler <eric@codebutler.com>"
+    }
+  }
+}
