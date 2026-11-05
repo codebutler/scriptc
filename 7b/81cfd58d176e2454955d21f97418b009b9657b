@@ -1,0 +1,49 @@
+packages/compiler/src/backend/llvm/lib-shared.ts
+  s_c50b2544a38862::t_e4d2e011a9aec4 1253
+packages/compiler/src/frontend/lowering/builtins/promises.ts
+  s_c50b2544a38862::t_fa973451647bff 856-858,860-862
+packages/compiler/src/frontend/lowering/lower-classes.ts
+  s_c50b2544a38862::t_9a2db752e98259 1,11900-11908
+packages/compiler/src/ir/builtin-signatures.ts
+  s_c50b2544a38862::t_cbd60cbd4cbcb3 460-462
+packages/compiler/src/ir/runtime-features.ts
+  s_c50b2544a38862::t_769c0f4b4b2098 108
+packages/compiler/test/ts7/baselines/order-parity/tests/corpus/promise-dynamic-resolution.ts.json
+  s_c50b2544a38862::t_d114e2064df76f 1-6
+packages/compiler/test/ts7/baselines/order-parity/tests/corpus/promise-resolve-thenables.js.json
+  s_c50b2544a38862::t_cc2962155c9279 1-6
+packages/compiler/test/ts7/baselines/order-parity/tests/diagnostics/promise-resolve-typed-thenable.ts.json
+  s_c50b2544a38862::t_b45c88325839cf 1-6
+packages/runtime/src/scr_async_dyn.c
+  s_c50b2544a38862::t_490e374c413282 1788-1820
+packages/runtime/src/scr_dyn.h
+  s_c50b2544a38862::t_04feb920adc5a7 2455-2457
+tests/corpus/promise-dynamic-resolution.ts
+  s_c50b2544a38862::t_3865210eb91340 1-118
+tests/corpus/promise-resolve-thenables.js
+  s_c50b2544a38862::t_0c32463d559aaf 1-26
+tests/diagnostics/promise-resolve-typed-thenable.ts
+  s_c50b2544a38862::t_6722fe736afd92 1-4
+tests/harness/__snapshots__/promise-resolve-typed-thenable.ts.txt
+  s_c50b2544a38862::t_7d1c39360de83d 1-8
+tests/harness/corpus-costs/promise-dynamic-resolution.ts.json
+  s_c50b2544a38862::t_1616ad26220aae 1
+tests/harness/corpus-costs/promise-resolve-thenables.js.json
+  s_c50b2544a38862::t_2d3ad34ca8eb7d 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7b81cfd58d176e2454955d21f97418b009b9657b",
+  "prompts": {},
+  "sessions": {
+    "s_c50b2544a38862": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1abfa-ada8-7643-af2a-880abae5e723",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Eric Butler <eric@codebutler.com>"
+    }
+  }
+}
