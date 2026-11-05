@@ -1,3 +1,4 @@
+import { thenReader } from "./checked-promise-all.js";
 import {
   isJsIteratorGlobal,
   iteratorPrototypeExpr,
@@ -11895,6 +11896,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
             "Promise executors whose reject parameter is not '(reason: Error) => void'",
           );
         }
+      }
+      if (type.inner.kind === "dyn") {
+        return {
+          kind: "libCall",
+          fn: "dyn.promiseNew",
+          args: [lowerer.coerceToExpected(executor, DYN), thenReader(lowerer, loc)],
+          type,
+          loc,
+        };
       }
       return { kind: "newPromise", executor, type, loc };
     }

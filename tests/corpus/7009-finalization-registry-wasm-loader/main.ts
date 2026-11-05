@@ -1,3 +1,4 @@
+// @requires-libnode
 // A package loaded the way wasm-bindgen's web target loads: FinalizationRegistry
 // guards and registrations run at load and in constructors, and free()
 // unregisters. Registrations keep their bookkeeping; cleanup

@@ -853,28 +853,13 @@ export function lowerPromiseStaticCall(
       lowerer.noLowering("Promise.resolve at a unit-typed promise", call);
     }
     const value = lowerer.lowerExprExpecting(argNode, resultT.inner);
-    // In JavaScript, a checked-dynamic argument may itself hold a promise
-    // (a TypeScript async callback's result: `Promise.resolve(fn())`):
-    // Promise.resolve answers THAT promise — the same object, adopted —
-    // and wraps every other value.
-    if (
-      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
-      value.type.kind === "dyn" &&
-      resultT.inner.kind === "dyn"
-    ) {
-      const local = lowerer.declareHiddenLocal("%resolveValue", DYN);
-      const ref: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
+    // Dynamic payloads can hide promises or thenables in either source
+    // language. Use the same resolution procedure as dynamic await.
+    if (value.type.kind === "dyn" && resultT.inner.kind === "dyn") {
       return {
-        kind: "seqExpr",
-        stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
-        result: {
-          kind: "ternary",
-          cond: { kind: "dynTest", test: "promise", value: ref, type: BOOL, loc },
-          then: { kind: "dynCheck", value: ref, type: resultT, loc },
-          else_: { kind: "intrinsic", name: "promise.resolve", args: [ref], type: resultT, loc },
-          type: resultT,
-          loc,
-        },
+        kind: "libCall",
+        fn: "dyn.promiseResolve",
+        args: [value, thenReader(lowerer, loc)],
         type: resultT,
         loc,
       };

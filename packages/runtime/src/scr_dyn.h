@@ -2452,6 +2452,9 @@ ScrPromise *scr_dyn_promise_any(const ScrDyn *entries, const ScrDyn *reader);
  * itself, a thenable adopts through its resolve job, a throwing `then`
  * read rejects, and any other value fulfills. +1. */
 ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader);
+/* Runs the borrowed dynamic executor synchronously with resolving functions
+ * sharing first-call state. reader dispatches typed thenable properties. +1. */
+ScrPromise *scr_dyn_promise_new(const ScrDyn *executor, const ScrDyn *reader);
 /* Resolves `target` with a dyn value (borrowed), as a promise's resolve
  * function does: a native promise adopts, a thenable adopts through its
  * resolve job, a throwing `then` read rejects, and any other value

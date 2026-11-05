@@ -105,6 +105,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
   "dyn.promiseResolve",
+  "dyn.promiseNew",
   // The generic Promise statics build and settle their capability's promise
   // with dyn values (scr_dyn_new_promise, scr_dyn_promise_resolve).
   "promise.genericStatic",

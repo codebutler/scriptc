@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/promise-resolve-typed-thenable.ts"
+ ],
+ "diags": []
+}

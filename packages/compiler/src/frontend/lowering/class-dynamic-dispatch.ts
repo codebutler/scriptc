@@ -728,14 +728,20 @@ function readOnlyBagBody(body: IrStmt[], orEmpty = false, prototype = false): Ir
     )
       continue;
     if (isEmptyBag(store.value) && !orEmpty) branch.then.shift();
-    else
+    else {
+      let value = store.value;
+      if (prototype) {
+        const inherited = bagInitializerPrototype(value);
+        if (inherited !== null) value = inherited;
+      }
       absent.then = [
         {
           kind: "return",
-          value: (prototype && bagInitializerPrototype(store.value)) || store.value,
+          value,
           loc: store.loc,
         },
       ];
+    }
   }
   return body;
 }

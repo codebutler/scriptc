@@ -1,0 +1,8 @@
+promise-resolve-typed-thenable.ts:4:29 - error SC2020: 'Promise.resolve of a thenable' is part of the standard library types but has no scriptc lowering yet
+
+  3 | const value = { then(resolve: (value: number) => void) { resolve(1); } };
+  4 | console.log(Promise.resolve(value));
+    |                             ^~~~~
+  5 | 
+
+  hint: JS would ADOPT the then method, not wrap the object — await the thenable's settlement explicitly

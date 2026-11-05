@@ -1,7 +1,7 @@
 // question() with a query that is not a string: a non-terminal interface
 // throws (callback form) or rejects (readline/promises) with Node's
 // ERR_INVALID_ARG_TYPE from the output write, and the question stays
-// pending; a terminal interface writes the query as a string.
+// pending. A terminal interface also throws for a non-string query.
 const readline = require("readline");
 const readlinePromises = require("readline/promises");
 const { PassThrough } = require("stream");
@@ -43,7 +43,11 @@ async function main() {
 
   const tin = new PassThrough();
   const trl = readline.createInterface({ input: tin, output: capture("tty"), terminal: true });
-  trl.question(7, (answer) => console.log("tty answer", answer));
+  try {
+    trl.question(7, (answer) => console.log("tty answer", answer));
+  } catch (e) {
+    console.log("tty", e.name, e.code, e.message);
+  }
   tin.write("x\r");
   await new Promise((resolve) => setImmediate(resolve));
   trl.close();
