@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-method-calls-beside-function-dictionary-writes.ts"
+ ],
+ "diags": []
+}

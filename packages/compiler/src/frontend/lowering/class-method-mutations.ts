@@ -185,12 +185,6 @@ export function collectClassMethodMutations(
       properties.every((property) => !FUNCTION_MEMBER_NAMES.has(ts.symbolName(property)))
     );
   };
-  // A string index whose values cannot be functions excludes callable
-  // method slots. Class instances have no implicit index signature, so such
-  // a dictionary is only a class view when the class declares that index
-  // signature, and then every method must be assignable to its value type,
-  // or when the dictionary keeps checked identity: it then holds the
-  // existing objects it receives, class instances included.
   // A string-keyed dictionary that keeps checked identity holds the
   // existing objects it receives, class instances included, so any write
   // through it can replace a method.
@@ -204,15 +198,45 @@ export function collectClassMethodMutations(
       lowerer.classImplementedProtocol(type)
     );
   };
-  const functionFreeDictionary = (value: ts.Expression): boolean => {
+  // A callable value type: its values are functions, never class instances
+  // or other open objects.
+  const callable = (type: ts.Type): boolean =>
+    (type.flags & ts.TypeFlags.Object) !== 0 &&
+    (lowerer.checker.getCallSignatures(type).length > 0 ||
+      lowerer.checker.getConstructSignatures(type).length > 0);
+  // Whether an instance of some typed class can have `type`: a class
+  // instance has a string index signature only when its class declares one,
+  // and scriptc refuses such classes today; the test keeps the census sound
+  // if they compile one day. Unnamed classes answer by their declaration.
+  const classInstanceFits = (type: ts.Type): boolean =>
+    typedClasses.some((cls) => {
+      const symbol = cls.name ? lowerer.checker.getSymbolAtLocation(cls.name) : undefined;
+      if (!symbol) return cls.members.nodes.some(ts.isIndexSignatureDeclaration);
+      return lowerer.checker.isTypeAssignableTo(
+        lowerer.checker.getDeclaredTypeOfSymbol(symbol),
+        type,
+      );
+    });
+  // A string-keyed dictionary that cannot be a class instance. Unless it
+  // keeps checked identity (dictionaryView), such a dictionary is a native
+  // record, and converting an existing object into one copies its fields,
+  // so a write through it reaches the copy, never an instance's method
+  // slot. Its values must still be closed: function-free values (a class
+  // view would need its methods assignable to them), or functions, which
+  // a native record holds as well. A dictionary of open objects (`object`,
+  // `unknown`, `any`) is checked-dynamic and keeps the identity of the
+  // object it receives, so writes through it stay in the census.
+  const closedDictionary = (value: ts.Expression): boolean => {
     const type = lowerer.typeOf(value);
     if (lowerer.classImplementedProtocol(type)) return false;
-    return lowerer.checker
-      .getIndexInfosOfType(type)
-      .some(
-        (index) =>
-          (index.keyType.flags & ts.TypeFlags.StringLike) !== 0 && functionFree(index.type),
+    return lowerer.checker.getIndexInfosOfType(type).some((index) => {
+      if ((index.keyType.flags & ts.TypeFlags.StringLike) === 0) return false;
+      if (functionFree(index.type)) return true;
+      const parts = index.type.isUnionType() ? ts.constituentTypes(index.type) : [index.type];
+      return (
+        parts.every((part) => functionFree(part) || callable(part)) && !classInstanceFits(type)
       );
+    });
   };
   const literalLoopKeys = (key: ts.Expression): (string | number)[] | null => {
     if (!ts.isIdentifier(key)) return null;
@@ -680,10 +704,9 @@ export function collectClassMethodMutations(
       unknownOwnField = true;
       continue;
     }
-    // A string index whose values cannot be functions excludes callable
-    // method slots. Unlike structural interfaces, it cannot be a live
-    // class-method view.
-    if (receiver && (freshReceiver(receiver) || functionFreeDictionary(receiver))) continue;
+    // A closed string-keyed dictionary is never a class instance. Unlike
+    // structural interfaces, it cannot be a live class-method view.
+    if (receiver && (freshReceiver(receiver) || closedDictionary(receiver))) continue;
     const flags = type?.flags ?? ts.TypeFlags.Unknown;
     if (flags & ts.TypeFlags.NumberLike) {
       // Numeric writes can replace numeric names but not ordinary names.

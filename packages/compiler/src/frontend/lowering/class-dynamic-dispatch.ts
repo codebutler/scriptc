@@ -692,15 +692,28 @@ function classDispatch(run: readonly ClassRunBranch[]): IrStmt {
 
 const READ_PROPERTIES = "%dyn.class.readProperties";
 const READ_PROPERTIES_OR_EMPTY = "%dyn.class.readPropertiesOrEmpty";
+/** The object a method read looks its key up in (classMethodHolderHelper). */
+const READ_PROPERTIES_OR_PROTOTYPE = "%dyn.class.readPropertiesOrPrototype";
 
 function isEmptyBag(value: IrExpr): boolean {
   return value.kind === "dynObjLit" && value.fields?.length === 0;
 }
 
+/** The prototype a bag initializer creates the bag from
+ * (`dyn.objCreate(prototype)`), or null for any other initializer. */
+function bagInitializerPrototype(value: IrExpr): IrExpr | null {
+  return value.kind === "libCall" && value.fn === "dyn.objCreate" && value.args.length === 1
+    ? value.args[0]!
+    : null;
+}
+
 /** The property-bag dispatch's class branches without their lazy stores:
  * `if (bag === undefined) bag = init` becomes `return init` (not stored), or
- * nothing for an empty bag unless `orEmpty` asks for a fresh empty object. */
-function readOnlyBagBody(body: IrStmt[], orEmpty = false): IrStmt[] {
+ * nothing for an empty bag unless `orEmpty` asks for a fresh empty object.
+ * With `prototype`, an absent bag that would start from a prototype returns
+ * that prototype itself: the caller only reads a key through it, and an
+ * object with no own properties answers every read from its prototype. */
+function readOnlyBagBody(body: IrStmt[], orEmpty = false, prototype = false): IrStmt[] {
   for (const branch of body) {
     if (branch.kind !== "if") continue;
     const absent = branch.then[0];
@@ -715,7 +728,14 @@ function readOnlyBagBody(body: IrStmt[], orEmpty = false): IrStmt[] {
     )
       continue;
     if (isEmptyBag(store.value) && !orEmpty) branch.then.shift();
-    else absent.then = [{ kind: "return", value: store.value, loc: store.loc }];
+    else
+      absent.then = [
+        {
+          kind: "return",
+          value: (prototype && bagInitializerPrototype(store.value)) || store.value,
+          loc: store.loc,
+        },
+      ];
   }
   return body;
 }
@@ -860,6 +880,45 @@ export function classPropertiesHelper(lowerer: Lowerer, loc: SrcLoc, readOnly = 
               loc,
             }
           : varRef("p.0", DYN, loc),
+        loc,
+      },
+    ],
+    loc,
+  };
+  lowerer.liftedFns.push(helper);
+  return helper;
+}
+
+/** `%dyn.class.readPropertiesOrPrototype(value)`: what a read of a method
+ * slot looks the key up in, without creating anything. An instance with its
+ * own property bag answers the bag; one without answers the prototype its
+ * bag would start from, which gives every key the answer an empty bag over
+ * that prototype gives. The read-only bag (`%dyn.class.readProperties`)
+ * answers the absent case with a fresh object over the prototype, so a
+ * method call through it allocated and released one object per call.
+ * Only key reads may use the result: an own-key test on it would find the
+ * prototype's members. Settled by finalize like the read-only bag; until
+ * then (and in programs without a property-bag dispatch) it is the
+ * read-only bag. Per-class forms are typedPropertyBag's. */
+export function classMethodHolderHelper(lowerer: Lowerer, loc: SrcLoc): IrFunction {
+  lowerer.shareHelper(READ_PROPERTIES_OR_PROTOTYPE);
+  const existing = lowerer.liftedFnNamed(READ_PROPERTIES_OR_PROTOTYPE);
+  if (existing) return existing;
+  const helper: IrFunction = {
+    name: READ_PROPERTIES_OR_PROTOTYPE,
+    params: [{ localId: "p.0", name: "value", type: DYN }],
+    returnType: DYN,
+    locals: [{ id: "p.0", name: "value", type: DYN, mutable: false }],
+    body: [
+      {
+        kind: "return",
+        value: {
+          kind: "call",
+          callee: classPropertiesHelper(lowerer, loc, true).name,
+          args: [varRef("p.0", DYN, loc)],
+          type: DYN,
+          loc,
+        },
         loc,
       },
     ],
@@ -1459,6 +1518,8 @@ export class ClassDynamicDispatch {
     helper: IrFunction;
     initialize: Extract<IrStmt, { kind: "fieldSet" }>;
     orEmpty?: boolean;
+    /** A method holder (classMethodHolderHelper) of this receiver type. */
+    prototype?: Extract<IrType, { kind: "object" }>;
   }[] = [];
   /** Read-only bags of exactly one class (exactPropertyBag), by class and
    * whether an absent bag reads as a fresh empty object. */
@@ -2526,7 +2587,9 @@ export class ClassDynamicDispatch {
         }
         if (
           expr.kind === "call" &&
-          (expr.callee === this.propertyBag!.name || expr.callee === "%dyn.class.readProperties")
+          (expr.callee === this.propertyBag!.name ||
+            expr.callee === READ_PROPERTIES ||
+            expr.callee === READ_PROPERTIES_OR_PROTOTYPE)
         ) {
           const boxed = expr.args[0];
           if (boxed?.kind === "dynFrom" && isDynTypedRefType(boxed.value.type)) {
@@ -2534,7 +2597,8 @@ export class ClassDynamicDispatch {
               lowerer,
               boxed.value.type,
               expr.loc,
-              expr.callee === "%dyn.class.readProperties",
+              expr.callee !== this.propertyBag!.name,
+              expr.callee === READ_PROPERTIES_OR_PROTOTYPE,
             );
             if (helper) {
               changed = true;
@@ -5279,11 +5343,14 @@ export class ClassDynamicDispatch {
     type: Extract<IrType, { kind: "object" }>,
     loc: SrcLoc,
     readOnly: boolean,
+    prototype = false,
   ): IrFunction | null {
     // A superclass constructor can be the first code to access this bag.
-    // Its receiver still needs the actual subclass's prototype.
-    if (lowerer.classes.get(type.className)?.subclasses.length) return null;
-    const key = `${type.className}:${readOnly}`;
+    // Its receiver still needs the actual subclass's prototype. A method
+    // holder never stores, and finalize selects its prototype by the
+    // receiver's actual class (methodHolderPrototype).
+    if (!prototype && lowerer.classes.get(type.className)?.subclasses.length) return null;
+    const key = `${type.className}:${readOnly}${prototype ? ":prototype" : ""}`;
     const existing = this.typedPropertyBags.get(key);
     if (existing) return existing;
     const initializers = this.bagInitializers.get(type.className);
@@ -5320,7 +5387,7 @@ export class ClassDynamicDispatch {
       loc,
     };
     const helper: IrFunction = {
-      name: `%class.${readOnly ? "readProperties" : "properties"}:${type.className}`,
+      name: `%class.${prototype ? "readPropertiesOrPrototype" : readOnly ? "readProperties" : "properties"}:${type.className}`,
       params: [{ localId: "p.0", name: "value", type }],
       returnType: DYN,
       locals: [{ id: "p.0", name: "value", type, mutable: false }],
@@ -5338,7 +5405,8 @@ export class ClassDynamicDispatch {
     };
     initializers.push(initialize);
     this.typedPropertyBags.set(key, helper);
-    if (readOnly) this.readPropertyBags.push({ helper, initialize });
+    if (readOnly)
+      this.readPropertyBags.push({ helper, initialize, ...(prototype ? { prototype: type } : {}) });
     this.generated.add(helper);
     lowerer.liftedFns.push(helper);
     return helper;
@@ -5530,33 +5598,61 @@ export class ClassDynamicDispatch {
     return helper;
   }
 
+  /** The prototype a method holder of `type` (classMethodHolderHelper)
+   * answers for an instance without its own bag: the one that instance's
+   * bag would start from. A class with subclasses selects it by the
+   * instance's actual class, as its bag initializers do (bagPrototype), now
+   * that every constructible class is known. Null keeps the read-only bag's
+   * answer, a fresh object over the prototype. */
+  private methodHolderPrototype(
+    lowerer: Lowerer | undefined,
+    type: Extract<IrType, { kind: "object" }>,
+    initialize: Extract<IrStmt, { kind: "fieldSet" }>,
+  ): IrExpr | null {
+    const prototype = bagInitializerPrototype(initialize.value);
+    const info = lowerer?.classes.get(type.className);
+    if (prototype === null || lowerer === undefined || info === undefined) return null;
+    if (info.subclasses.length === 0) return structuredClone(prototype);
+    return this.bagPrototype(lowerer, info, varRef("p.0", type, initialize.loc), initialize.loc);
+  }
+
   /** Prototype state may appear in a later reachable body, so read-only bags
    * settle only after the dispatch worklist closes. A read never stores: an
    * absent empty bag stays undefined (callers test it), and an absent
    * prototype-backed bag is produced for this read only. A published object
    * cannot take the store, and Node's reads never write. */
   finalize(lowerer?: Lowerer): void {
+    // Selecting a method holder's prototype can build a bagPrototype
+    // helper, which must be generated before the tables are shared.
+    const holders = this.readPropertyBags.map(({ initialize, prototype }) =>
+      prototype ? this.methodHolderPrototype(lowerer, prototype, initialize) : null,
+    );
     // Each table serves every site that reaches it.
     if (lowerer) for (const fn of this.generated) lowerer.shareHelper(fn);
     if (lowerer) this.recordBagInitializers(lowerer);
-    for (const { helper, initialize, orEmpty } of this.readPropertyBags) {
+    this.readPropertyBags.forEach(({ helper, initialize, orEmpty }, i) => {
       const absent = helper.body[0];
       if (isEmptyBag(initialize.value) && !orEmpty) helper.body.shift();
       else if (absent?.kind === "if")
-        absent.then = [{ kind: "return", value: initialize.value, loc: initialize.loc }];
-    }
+        absent.then = [
+          { kind: "return", value: holders[i] ?? initialize.value, loc: initialize.loc },
+        ];
+    });
     // The untyped read-only accessor selects the receiver's class as the
     // complete property-bag dispatch does, without its lazy stores.
     for (const fn of lowerer?.liftedFns ?? []) {
       if (
         !this.propertyBag ||
-        (fn.name !== READ_PROPERTIES && fn.name !== READ_PROPERTIES_OR_EMPTY)
+        (fn.name !== READ_PROPERTIES &&
+          fn.name !== READ_PROPERTIES_OR_EMPTY &&
+          fn.name !== READ_PROPERTIES_OR_PROTOTYPE)
       )
         continue;
       fn.locals = structuredClone(this.propertyBag.locals);
       fn.body = readOnlyBagBody(
         structuredClone(this.propertyBag.body),
         fn.name === READ_PROPERTIES_OR_EMPTY,
+        fn.name === READ_PROPERTIES_OR_PROTOTYPE,
       );
     }
     if (lowerer) this.guardClassTables(lowerer);
@@ -5618,6 +5714,7 @@ export class ClassDynamicDispatch {
       "%dyn.class.properties",
       READ_PROPERTIES,
       READ_PROPERTIES_OR_EMPTY,
+      READ_PROPERTIES_OR_PROTOTYPE,
       "%dyn.class.normalize",
       "%dyn.class.staticProperties",
     ]);
@@ -5696,6 +5793,7 @@ export class ClassDynamicDispatch {
       "%dyn.class.properties",
       READ_PROPERTIES,
       READ_PROPERTIES_OR_EMPTY,
+      READ_PROPERTIES_OR_PROTOTYPE,
       "%dyn.class.normalize",
       "%dyn.class.staticProperties",
     ]);
