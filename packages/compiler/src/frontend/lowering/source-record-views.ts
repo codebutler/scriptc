@@ -1,7 +1,7 @@
 import * as ts from "../ts7/adapter.js";
 import { dynFallbackType, type Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
-import { type IrType, typeKey } from "../../ir/ir.js";
+import { type IrExpr, type IrType, type SrcLoc, VOID, typeKey } from "../../ir/ir.js";
 import { recordGraphHasFunction } from "../../ir/source-record-views.js";
 
 const targets = new WeakMap<Lowerer, Set<string>>();
@@ -53,4 +53,32 @@ export function sourceAssertionShapes(lowerer: Lowerer): ReadonlySet<string> {
     });
   }
   return found;
+}
+
+/** Keep the refusal ahead of clone optimization and override evaluation. */
+export function checkedSourceRecordClone(lowerer: Lowerer, value: IrExpr, loc: SrcLoc): IrExpr {
+  if (value.type.kind !== "record" || !sourceAssertionShapes(lowerer).has(value.type.shapeId))
+    return value;
+  const local = lowerer.declareHiddenLocal("%cloneSource", value.type);
+  const reference: IrExpr = { kind: "varRef", localId: local.id, type: value.type, loc };
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: local.id, init: value, loc },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "record.sourceCloneCheck",
+          args: [reference],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: reference,
+    type: value.type,
+    loc,
+  };
 }

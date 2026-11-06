@@ -276,6 +276,18 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${out} = call ptr @scr_promise_payload_ref(ptr ${promise.name}) ; +1`);
     return host.own({ name: out, type: e.type });
   }
+  if (e.fn === "record.sourceCloneCheck") {
+    const source = e.args[0]!;
+    if (source.type.kind !== "record")
+      throw new InternalCompilerError(
+        "llvm emitter bug: structural-view clone guard of a non-record",
+      );
+    const value = host.emitReadReceiver(source);
+    host.declare("declare void @scr_record_source_view_refuse_clone(ptr)");
+    B.line(`call void @scr_record_source_view_refuse_clone(ptr ${value.name})`);
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "record.sourceHas") {
     // A module whose conversions keep no record sources has none to find:
     // the gate constant folds the test, and the source-reading branches

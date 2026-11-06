@@ -2031,11 +2031,32 @@ const source: unknown = Object.create(null);
 Object.defineProperty(source, "value", { value: 4, configurable: true });
 Object.defineProperty(source, "call", { value: () => 1, configurable: true });
 const view = source as Api;
-try { const clone = { ...view }; console.log(clone.value); }
+let effects = 0;
+function sourceView(): Api { effects++; return view; }
+function override(): number { effects += 10; return 9; }
+try { const clone = { ...sourceView() }; console.log(clone.value); }
 catch (error) { console.log(error instanceof TypeError, String(error).includes("explicit dynamic spread")); }
+try { const clone = { ...sourceView(), value: override() }; console.log(clone.value); }
+catch (error) { console.log("override", error instanceof TypeError, effects); }
+try { const clone = { prefix: ++effects, ...sourceView(), extra: override() }; console.log(clone.value); }
+catch (error) { console.log("mixed", error instanceof TypeError, effects); }
+function nullable(input: Api | undefined): void {
+  try { const clone = { ...input }; console.log("absent", clone.value); }
+  catch (error) { console.log("union", error instanceof TypeError); }
+}
+nullable(view);
+nullable(undefined);
+const native: Api = { value: 6, call: () => 2 };
+const nativeCopy = { ...native, value: 7 };
+console.log("native", nativeCopy.value, nativeCopy.call());
 console.log(view.value);
 `,
     );
-    expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "true true\n4\n" });
+    expect(result).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout:
+        "true true\noverride true 2\nmixed true 4\nunion true\nabsent undefined\nnative 7 2\n4\n",
+    });
   });
 });
