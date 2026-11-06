@@ -2696,6 +2696,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/runtime/src/scr_blob_weak.test.ts",
           "tests/corpus/1402-buffer-encodings.ts",
           "tests/corpus/1660-buffer-read-write-num.ts",
           "tests/corpus/2902-bigint-bytes.ts",
@@ -2712,6 +2713,7 @@
           "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/node24-buffer-encoding-errors.ts",
           "tests/corpus/node24-buffer-encoding.ts",
+          "tests/corpus/weak-blob-file-identity.ts",
           "tests/fixtures/node-types/blob-file.ts",
           "tests/fixtures/node-types/text-encoding.ts"
         ]
@@ -3249,6 +3251,8 @@
         "status": "partial",
         "evidence": "compiler-feature:buffer.Blob",
         "tests": [
+          "tests/corpus/weak-blob-file-identity.ts",
+          "packages/runtime/src/scr_blob_weak.test.ts",
           "tests/corpus/blob-prototype-intrinsics.ts",
           "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
@@ -5170,6 +5174,8 @@
         "status": "partial",
         "evidence": "compiler-feature:buffer.File",
         "tests": [
+          "tests/corpus/weak-blob-file-identity.ts",
+          "packages/runtime/src/scr_blob_weak.test.ts",
           "tests/corpus/blob-prototype-intrinsics.ts",
           "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
@@ -52490,6 +52496,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/runtime/src/scr_blob_weak.test.ts",
           "tests/corpus/1423-text-codec.ts",
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
@@ -52514,6 +52521,7 @@
           "tests/corpus/blob-prototype-intrinsics.ts",
           "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/text-codec-values/main.ts",
+          "tests/corpus/weak-blob-file-identity.ts",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
           "tests/corpus/webassembly-jsapi.mjs",
@@ -52761,6 +52769,8 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.Blob",
         "tests": [
+          "tests/corpus/weak-blob-file-identity.ts",
+          "packages/runtime/src/scr_blob_weak.test.ts",
           "tests/corpus/blob-prototype-intrinsics.ts",
           "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
@@ -53122,6 +53132,8 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.File",
         "tests": [
+          "tests/corpus/weak-blob-file-identity.ts",
+          "packages/runtime/src/scr_blob_weak.test.ts",
           "tests/corpus/blob-prototype-intrinsics.ts",
           "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",

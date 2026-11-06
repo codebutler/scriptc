@@ -20247,6 +20247,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
     if (key->v.handle.tag != SCR_DYNH_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_SHARED_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_WEAK_MAP &&
         key->v.handle.tag != SCR_DYNH_WEAK_SET && key->v.handle.tag != SCR_DYNH_FINALIZATION_REGISTRY &&
         key->v.handle.tag != SCR_DYNH_STDIO &&
+        key->v.handle.tag != SCR_DYNH_BLOB && key->v.handle.tag != SCR_DYNH_FILE &&
         key->v.handle.tag != SCR_DYNH_FETCH_REQUEST && key->v.handle.tag != SCR_DYNH_FETCH_RESPONSE &&
         key->v.handle.tag != SCR_DYNH_WEB_STREAM &&
         key->v.handle.tag != SCR_DYNH_MAP && key->v.handle.tag != SCR_DYNH_SET &&
