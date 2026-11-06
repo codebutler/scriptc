@@ -5342,6 +5342,7 @@ export class LlEmitter {
         this.rcMode === undefined,
         (text) => this.cstr(text),
         this.shapeHost.recordViews?.partialTargets.has(shapeId) === true,
+        shape.freezable === true && this.shapeHost.recordViews.sourceTargets.has(shapeId),
       );
     } else {
       p = this.B.tmp();
@@ -5402,7 +5403,14 @@ export class LlEmitter {
     const slots = B.newLabel("pf.slots");
     const extra = B.newLabel("pf.extra");
     const answer = B.newLabel("pf.answer");
-    for (const line of recordViewTestLines(this.sizeType, objName, isView))
+    for (const line of recordViewTestLines(
+      this.sizeType,
+      objName,
+      isView,
+      this.recordShape(shapeId).freezable && this.shapeHost.recordViews?.sourceTargets.has(shapeId)
+        ? (declaration) => this.declare(declaration)
+        : undefined,
+    ))
       B.line(line.trimStart());
     B.condBr(isView, view, notView);
     // Not a view: the field's own slot.
@@ -5510,7 +5518,14 @@ export class LlEmitter {
     const store = B.newLabel("ps.store");
     const extra = B.newLabel("ps.extra");
     const done = B.newLabel("ps.done");
-    for (const line of recordViewTestLines(this.sizeType, objName, isView))
+    for (const line of recordViewTestLines(
+      this.sizeType,
+      objName,
+      isView,
+      this.recordShape(shapeId).freezable && this.shapeHost.recordViews?.sourceTargets.has(shapeId)
+        ? (declaration) => this.declare(declaration)
+        : undefined,
+    ))
       B.line(line.trimStart());
     B.condBr(isView, view, notView);
     B.startBlock(notView);

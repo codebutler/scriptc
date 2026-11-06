@@ -227,12 +227,7 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   const sourceTargets = new Set(
     [...requestedSources].filter((id) => {
       const shape = shapes.get(id);
-      return (
-        shape !== undefined &&
-        plainShape(shape) &&
-        shape.freezable !== true &&
-        !options.excluded(id)
-      );
+      return shape !== undefined && plainShape(shape) && !options.excluded(id);
     }),
   );
   if (
@@ -329,14 +324,25 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   };
 }
 
-/** Lines setting `dest` (i1) to whether the record `obj` of a view target
- * type is a view. A view's rc word carries the frozen bit (scr_rc.h
- * SCR_RC_FROZEN), which no other value of such a type has: view targets
- * are never freezable, and a word with the program-lifetime bit (an
- * immortal one included) is no view, so a view's word is the frozen bit
- * plus a count. The
- */
-export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: string): string[] {
+/** Lines setting `dest` (i1) to whether `obj` is a view. Nonfreezable
+ * targets use the frozen bit plus a count, without the program-lifetime
+ * bit. Freezable source targets require `sourceLookup`: an ordinary frozen
+ * native record shares that header pattern but has no retained source. */
+export function recordViewTestLines(
+  sizeType: "i32" | "i64",
+  obj: string,
+  dest: string,
+  sourceLookup?: (declaration: string) => void,
+): string[] {
+  // A freezable source target also admits ordinary frozen native records.
+  // Their header mark is not a view discriminator; consult the owned source.
+  if (sourceLookup) {
+    sourceLookup(`declare ptr @scr_record_source_view_source(ptr)`);
+    return [
+      `  ${dest}.source = call ptr @scr_record_source_view_source(ptr ${obj})`,
+      `  ${dest} = icmp ne ptr ${dest}.source, null`,
+    ];
+  }
   // The frozen bit with a count and no program-lifetime bit: one range.
   const [bit, span] =
     sizeType === "i64" ? ["4611686018427387904", "4294967296"] : ["1073741824", "1073741824"];
@@ -368,8 +374,9 @@ export function recordViewFieldPtr(
   outOfLine: boolean,
   cstr: (text: string) => string,
   partial = false,
+  freezableSource = false,
 ): string {
-  if (outOfLine) {
+  if (outOfLine && !freezableSource) {
     const field = "scr_record_view_field";
     declare(`declare ptr @${field}(ptr, ${sizeType}, ${sizeType})`);
     const ptr = B.tmp();
@@ -390,7 +397,13 @@ export function recordViewFieldPtr(
   const own = B.tmp();
   B.line(`${own} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${slotIndex}`);
   const isView = B.tmp();
-  for (const line of recordViewTestLines(sizeType, obj, isView)) B.line(line.trimStart());
+  for (const line of recordViewTestLines(
+    sizeType,
+    obj,
+    isView,
+    freezableSource ? declare : undefined,
+  ))
+    B.line(line.trimStart());
   const from = B.currentLabel();
   const view = B.newLabel("rv.view");
   const join = B.newLabel("rv.join");

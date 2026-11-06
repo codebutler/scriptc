@@ -1,6 +1,7 @@
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
+  DYN,
   VOID,
   shapeHasAccessorSlots,
   typeKey,
@@ -16,6 +17,7 @@ import type { Lowerer } from "./lowerer.js";
 import { recordHasOwnHelper } from "./lower-calls.js";
 import { isJsSourceFile } from "../program.js";
 import { isStrictCode } from "./strict-mode.js";
+import { sourceAssertionShapes } from "./source-record-views.js";
 
 /* Object.freeze of records and arrays that other references can still
  * write. Only the types a program may freeze pay for it. A record keeps its
@@ -64,13 +66,27 @@ export function lowerNativeFreeze(
   const type = target.type;
   const slot = lowerer.declareHiddenLocal("%freezeTarget", type);
   const receiver = (): IrExpr => varRef(slot.id, type, loc);
+  // A structural API view freezes its retained source. Boxing also keeps
+  // the existing native freeze path for ordinary records of the same type.
+  const sourceView =
+    fn === "record.freeze" &&
+    type.kind === "record" &&
+    sourceAssertionShapes(lowerer).has(type.shapeId);
   return {
     kind: "seqExpr",
     stmts: [
       { kind: "varDecl", localId: slot.id, init: target, loc },
       {
         kind: "exprStmt",
-        expr: { kind: "libCall", fn, args: [receiver()], type: VOID, loc },
+        expr: sourceView
+          ? {
+              kind: "libCall",
+              fn: "dyn.freeze",
+              args: [lowerer.coerceToExpected(receiver(), DYN)],
+              type: DYN,
+              loc,
+            }
+          : { kind: "libCall", fn, args: [receiver()], type: VOID, loc },
         loc,
       },
     ],

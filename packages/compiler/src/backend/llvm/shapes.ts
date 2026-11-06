@@ -2670,7 +2670,14 @@ export function emitRecordShapes(
           if (partial) host.declare(`declare void @scr_trap(ptr)`);
           clone.push(
             `  %so${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
-            ...recordViewTestLines(host.sizeType, "%src", `%sr${i}v`),
+            ...recordViewTestLines(
+              host.sizeType,
+              "%src",
+              `%sr${i}v`,
+              shape.freezable && host.recordViews.sourceTargets.has(shape.id)
+                ? (declaration) => host.declare(declaration)
+                : undefined,
+            ),
             `  br i1 %sr${i}v, label %sv${i}.view, label %sv${i}.join`,
             `sv${i}.view:`,
             `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,

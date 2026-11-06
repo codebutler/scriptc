@@ -2007,20 +2007,22 @@ try { view.value = 13; } catch (error) { console.log("readonly", error instanceo
       stdout: "true 0\ntrue 0\ntrue 0\n9 true 0\nread true 0\nwrite true 0\nreadonly true 12\n",
     });
   });
-  test("freezable source layouts retain their explicit refusal", async () => {
+  test("multiple-order source layouts retain their explicit refusal", async () => {
     const result = await compileAndRun(
-      "source-view-freezable",
+      "source-view-multiple-order",
       `
-interface Api { value: number; call(): number; }
+interface Api { value: number; child?: Api; call(): number; }
+const native: Api = { value: 2, call: () => 1 };
+const copy = { ...native };
+console.log(copy.value);
 const source: unknown = Object.create(null);
 Object.defineProperty(source, "value", { value: 4, configurable: true });
 Object.defineProperty(source, "call", { value: () => 1, configurable: true });
-Object.freeze(source);
 try { const view = source as Api; console.log(view.value); }
 catch (error) { console.log(error instanceof TypeError, String(error).includes("supported fixed-record structural view layout")); }
 `,
     );
-    expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "true true\n" });
+    expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "2\ntrue true\n" });
   });
   test("cloning an admitted source view refuses instead of copying it", async () => {
     const result = await compileAndRun(

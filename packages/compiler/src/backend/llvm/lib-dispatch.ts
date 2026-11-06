@@ -1288,6 +1288,29 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     // frozen: publish() freezes what it reaches, as Node's deep freeze does.
     const receiver = e.args[0]!;
     const value = host.emitReadReceiver(receiver);
+    const sourceCapable =
+      receiver.type.kind === "record" &&
+      host.shapeHost.recordViews?.sourceTargets.has(receiver.type.shapeId);
+    let sourceAnswer: { value: string; block: string; done: string } | undefined;
+    if (sourceCapable) {
+      const B = host.B;
+      host.declare(`declare ptr @scr_record_source_view_source(ptr)`);
+      host.declare(`declare zeroext i1 @scr_dyn_checked_record_frozen(ptr)`);
+      const source = B.tmp(),
+        isSource = B.tmp();
+      B.line(`${source} = call ptr @scr_record_source_view_source(ptr ${value.name})`);
+      B.line(`${isSource} = icmp ne ptr ${source}, null`);
+      const yes = B.newLabel("rf.source"),
+        no = B.newLabel("rf.native"),
+        done = B.newLabel("rf.result");
+      B.condBr(isSource, yes, no);
+      B.startBlock(yes);
+      const frozen = B.tmp();
+      B.line(`${frozen} = call zeroext i1 @scr_dyn_checked_record_frozen(ptr ${source})`);
+      B.br(done);
+      sourceAnswer = { value: frozen, block: yes, done };
+      B.startBlock(no);
+    }
     const S = host.sizeType;
     const rc = host.B.tmp(),
       top = host.B.tmp();
@@ -1300,6 +1323,16 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       host.publishedTypes?.recordGuarded(receiver.type.shapeId) === true
     )
       t = orPublished(host, t, rc);
+    if (sourceAnswer) {
+      const from = host.B.currentLabel();
+      host.B.br(sourceAnswer.done);
+      host.B.startBlock(sourceAnswer.done);
+      const answer = host.B.tmp();
+      host.B.line(
+        `${answer} = phi i1 [ ${sourceAnswer.value}, %${sourceAnswer.block} ], [ ${t}, %${from} ]`,
+      );
+      t = answer;
+    }
     return { name: t, type: e.type };
   }
   if (
