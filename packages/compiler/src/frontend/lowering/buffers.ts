@@ -87,7 +87,7 @@ function hasWorkerCapability(program: ts.Program, sources: ts.SourceFile[]): boo
     } else if (ts.isCallExpression(node)) {
       const id = node.arguments.nodes[0];
       const specifier = id ? staticForkString(program, id) : null;
-      if (specifier !== null && canonicalBuiltinModule(specifier) === "worker_threads") {
+      if (id && (specifier === null || canonicalBuiltinModule(specifier) === "worker_threads")) {
         const callee = strip(node.expression);
         const processGlobal =
           ts.isPropertyAccessExpression(callee) &&
@@ -95,7 +95,11 @@ function hasWorkerCapability(program: ts.Program, sources: ts.SourceFile[]): boo
           ts.isIdentifier(strip(callee.expression)) &&
           (strip(callee.expression) as ts.Identifier).text === "process" &&
           isNodeGlobal(program, strip(callee.expression) as ts.Identifier);
-        found = loader(callee) || processGlobal || builtin(callee, "process", "getBuiltinModule");
+        found =
+          callee.kind === ts.SyntaxKind.ImportKeyword ||
+          loader(callee) ||
+          processGlobal ||
+          builtin(callee, "process", "getBuiltinModule");
       }
     }
     if (!found) ts.forEachChild(node, visit);

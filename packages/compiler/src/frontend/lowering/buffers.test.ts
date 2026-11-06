@@ -56,6 +56,21 @@ test("worker detachment is known before lowering and leaves no-transfer calls un
       "const channel = new MessageChannel(); function method(port: any, key: string) { return port[key]; }",
       true,
     ],
+    [
+      "dynamic-import.ts",
+      "const w = await import('node:worker_threads'); function method(port: any, key: string) { return port[key]; }",
+      true,
+    ],
+    [
+      "constant-module.ts",
+      "const id = 'node:' + 'worker_threads'; const w = require(id); function method(port: any, key: string) { return port[key]; }",
+      true,
+    ],
+    [
+      "other-require.ts",
+      "const fs = require('node:fs'); function method(dict: Record<string, any>, key: string) { return dict[key]; }",
+      false,
+    ],
     ["index.ts", "function read(bytes: Uint8Array, index: number) { return bytes[index]; }", false],
     ["spread.ts", "port.postMessage(...args);", true],
     [

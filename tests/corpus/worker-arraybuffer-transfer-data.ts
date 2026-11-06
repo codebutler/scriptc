@@ -11,12 +11,25 @@ if (isMainThread) {
     transferList: [buffer, channel.port1],
   });
   check(buffer.byteLength === 0, "workerData source stayed attached");
+  let received = false;
+  let exited = false;
+  let exitCode = 0;
+  function finish(): void {
+    if (!received || !exited) return;
+    console.log("workerData transfers buffer and port together");
+    console.log("exit", exitCode);
+  }
   channel.port2.once("message", (value: number) => {
     check(value === 42, "mixed transfer lost port or bytes");
-    console.log("workerData transfers buffer and port together");
+    received = true;
     channel.port2.close();
+    finish();
   });
-  worker.on("exit", (code: number) => console.log("exit", code));
+  worker.on("exit", (code: number) => {
+    exitCode = code;
+    exited = true;
+    finish();
+  });
 
   const local = new MessageChannel();
   const spare = new MessageChannel();
