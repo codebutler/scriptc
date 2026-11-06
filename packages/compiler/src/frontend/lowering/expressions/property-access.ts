@@ -1,3 +1,4 @@
+import { lowerBlobPrototypeRead } from "../builtins/blob.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
@@ -27,7 +28,7 @@ import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import { wrapperConstructors } from "../primitive-wrappers.js";
 import * as ts from "../../ts7/adapter.js";
-import { lowerHistogramProperty } from "../builtins/performance.js";
+import { lowerHistogramProperty, lowerPerfHooksProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import { INSPECT_CUSTOM_DESCRIPTION, isInspectCustomAccess } from "../symbol-fields.js";
@@ -130,7 +131,11 @@ import {
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
 import { findGenericMethodOn, lowerStaticFieldRead } from "../lower-classes.js";
-import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
+import {
+  errorPrototypeName,
+  errorPrototypeValue,
+  lowerClassPrototypeData,
+} from "../class-prototypes.js";
 import { lowerEnumAccess } from "../lower-enums.js";
 import {
   hasOptionalChainGuard,
@@ -468,9 +473,9 @@ export function lowerPropertyAccessExpr(
     const staticName = staticFunctionNameRead(lowerer, expr);
     if (staticName !== null) return { kind: "strLit", value: staticName, type: STRING, loc };
   }
-  // An IntervalHistogram's readings (min, max, mean, stddev, count, exceeds).
+  // Performance's epoch origin and an IntervalHistogram's scalar readings.
   {
-    const reading = lowerHistogramProperty(lowerer, expr);
+    const reading = lowerPerfHooksProperty(lowerer, expr) ?? lowerHistogramProperty(lowerer, expr);
     if (reading) return reading;
   }
   // An X509Certificate's publicKey KeyObject.
@@ -1197,10 +1202,12 @@ export function lowerPropertyAccessExpr(
         : { kind: "strIntrinsic", method: "length", receiver: recv, args: [], type: F64, loc };
     }
   }
-  if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && expr.name.text === "constructor") {
+  // User-class instances retain their concrete constructor in the checked
+  // view, including when a TypeScript base-typed reference holds a subclass.
+  if (expr.name.text === "constructor") {
     const receiver = tryLowerExpression(lowerer, expr.expression);
     if (
-      receiver?.type.kind === "dyn" ||
+      (receiver?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) ||
       (receiver?.type.kind === "object" &&
         !lowerer.classes.get(receiver.type.className)?.fields.has("constructor"))
     ) {
@@ -2281,6 +2288,8 @@ export function lowerIntrinsicProperty(
     lowerer.stdlibGlobalMember(expr.expression, "Object") === "prototype"
   )
     return builtinGlobalValue("Object", locOf(expr));
+  const blobPrototype = lowerBlobPrototypeRead(lowerer, expr);
+  if (blobPrototype) return blobPrototype;
   const primitivePrototype = jsPrimitivePrototypeValue(lowerer, expr);
   if (primitivePrototype) return primitivePrototype;
   const builtinPrototype = builtinPrototypeMethod(lowerer, expr);
@@ -2356,9 +2365,19 @@ export function lowerIntrinsicProperty(
   }
   if (lowerer.stdlibGlobalMember(expr, "Object") === "prototype")
     return { kind: "libCall", fn: "dyn.objectPrototype", args: [], type: DYN, loc: locOf(expr) };
-  // Error.prototype as a value (`F.prototype = Object.create(Error.prototype)`).
-  if (isErrorPrototypeValue(lowerer, expr))
-    return { kind: "libCall", fn: "dyn.errorPrototype", args: [], type: DYN, loc: locOf(expr) };
+  const errorFamily = errorPrototypeName(lowerer, expr);
+  if (errorFamily !== null) return errorPrototypeValue(errorFamily, locOf(expr));
+  if (ts.isPropertyAccessExpression(expr.expression)) {
+    const family = errorPrototypeName(lowerer, expr.expression);
+    if (family !== null)
+      return {
+        kind: "dynKeyGet",
+        value: errorPrototypeValue(family, locOf(expr.expression)),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+        type: DYN,
+        loc: locOf(expr),
+      };
+  }
   // Function.prototype as a VALUE (a prototype-chain link:
   // `Object.setPrototypeOf(F.prototype, Function.prototype)`): one
   // anonymous function answering undefined, length 0 — a zero-capture
@@ -5573,6 +5592,7 @@ const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "EvalError",
   "URIError",
   "AggregateError",
+  "SuppressedError",
 ]);
 
 /** The builtin constructors JavaScript sources read as real function

@@ -1551,11 +1551,19 @@ export interface TypeMapperCtx {
   /** Localized failure's lenient mapping (Lowerer.lenientType): a nested
    * component whose mapping fails maps to the checked dynamic instead, so a
    * failing type keeps its outer shape with dynamic pieces. Only ever set
-   * on a throwaway context without memoization. */
+   * on a throwaway context without persistent memoization. */
   lenient?: boolean;
+  /** Owned by one lenient traversal, never shared with strict mapping or
+   * another root call. Only completed context-independent pieces enter it. */
+  lenientTraversalMemo?: LenientTraversalMemo;
   /** With `lenient`: told each component the lenient mapping turned into
    * the checked dynamic (Lowerer.lenientPieces). */
   onLenientPiece?: (type: ts.Type) => void;
+  /** With lenient mapping: report the first occurrence of each failed checker
+   * type in this traversal, at the failing leaf. The callback records
+   * diagnostics only; it must not change mapping bindings or registries.
+   * The per-occurrence onLenientPiece hook takes precedence when both exist. */
+  onLenientPieceOnce?: (type: ts.Type) => void;
   /** Canonical normalization's shadow mode (canon-map.ts): called after
    * each successful top-level mapping; installed only under
    * SCRIPTC_CANON_SHADOW=1. It records, and never changes a result. */
@@ -1733,6 +1741,16 @@ function genChannels(
   if (dynMix) return { yieldT: DYN, retT: DYN, nextT };
   return { yieldT, retT, nextT };
 }
+
+type LenientTraversalMemo = {
+  contexts: Map<
+    TypeMapperCtx,
+    Map<ts.Type, Map<number, { type: IrType | null; degraded: boolean }>>
+  >;
+  recursiveReads: number;
+  degradedReads: number;
+  notified: Set<ts.Type>;
+};
 
 /** SELF-REFERENTIAL types recurse through mapType with no structural floor:
  * `function somefn() { return somefn; }` maps the return type by mapping the
@@ -2210,17 +2228,81 @@ function arrayClassBaseType(
 }
 
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
-  const shadow = ctx.canonShadow;
-  if (shadow === undefined || mapTypeDepth !== 0) return mapTypeEntry(type, ctx);
-  // Shadow mode observes every successful top-level mapping, including the
-  // intrinsic primitives, local class values and memo hits that return
-  // before the mapping proper.
-  const mapped = mapTypeEntry(type, ctx);
-  if (mapped !== null) shadow(type, mapped, ctx);
-  return mapped;
+  const ownedMemo: LenientTraversalMemo | undefined =
+    ctx.lenient === true && ctx.lenientTraversalMemo === undefined
+      ? { contexts: new Map(), recursiveReads: 0, degradedReads: 0, notified: new Set() }
+      : undefined;
+  const active = ownedMemo === undefined ? ctx : { ...ctx, lenientTraversalMemo: ownedMemo };
+  try {
+    const shadow = active.canonShadow;
+    if (shadow === undefined || mapTypeDepth !== 0) return mapTypeEntry(type, active);
+    // Shadow mode observes every successful top-level mapping, including the
+    // intrinsic primitives, local class values and memo hits that return
+    // before the mapping proper.
+    const mapped = mapTypeEntry(type, active);
+    if (mapped !== null) shadow(type, mapped, active);
+    return mapped;
+  } finally {
+    // The temporary context contains the memo, whose context keys contain it
+    // in turn. Break that cycle even when mapping throws.
+    ownedMemo?.contexts.clear();
+    ownedMemo?.notified.clear();
+  }
 }
 
 function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const memo = ctx.lenient === true ? ctx.lenientTraversalMemo : undefined;
+  if (
+    memo === undefined ||
+    bypassTypeMemo ||
+    ctx.erasingSignature !== undefined ||
+    ctx.erasedMember !== undefined
+  )
+    return mapTypeUncachedEntry(type, ctx);
+  // The same type can fail at the depth limit and map nearer the root.
+  // emptyLiteralArm is temporarily changed in place during union mapping.
+  const key = mapTypeDepth * 2 + (ctx.emptyLiteralArm ? 1 : 0);
+  const known = memo.contexts.get(ctx)?.get(type)?.get(key);
+  if (known !== undefined) {
+    // Ancestors must still see a degradation: recursive owners that relied
+    // on a failed child cannot finalize a typed placeholder on a memo hit.
+    if (known.degraded) {
+      contextResolutions++;
+      memo.degradedReads++;
+    }
+    return known.type;
+  }
+  const resolutions = contextResolutions;
+  const scopeReads = scopeSensitivity;
+  const recursiveReads = memo.recursiveReads;
+  const degradedReads = memo.degradedReads;
+  const mapped = mapTypeUncachedEntry(type, ctx);
+  // Arbitrary per-occurrence callbacks cannot be skipped. A once collector
+  // already saw every failed piece in this completed mapping, so its only
+  // remaining effect on a hit is the sensitivity marker above. Every other
+  // context resolution (including a bound generic) still prevents reuse.
+  const collectedDegradation =
+    ctx.onLenientPiece === undefined &&
+    ctx.onLenientPieceOnce !== undefined &&
+    contextResolutions - resolutions === memo.degradedReads - degradedReads;
+  // A recursive back-reference is provisional until its owner finalizes,
+  // and that owner can still fail. Do not cache it or a containing piece.
+  // Leave those paths unchanged; only ordinary completed pieces are shared.
+  if (
+    (contextResolutions === resolutions || collectedDegradation) &&
+    scopeSensitivity === scopeReads &&
+    memo.recursiveReads === recursiveReads
+  ) {
+    let byType = memo.contexts.get(ctx);
+    if (byType === undefined) memo.contexts.set(ctx, (byType = new Map()));
+    let byDepth = byType.get(type);
+    if (byDepth === undefined) byType.set(type, (byDepth = new Map()));
+    byDepth.set(key, { type: mapped, degraded: contextResolutions !== resolutions });
+  }
+  return mapped;
+}
+
+function mapTypeUncachedEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
   // These intrinsic domains cannot depend on generic bindings, declaration
   // provenance, or recursive shape state. Enum literals retain the ordinary
@@ -2319,7 +2401,13 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (mapped === null && ctx.lenient === true && !topLevel) {
       mapped = DYN;
       contextResolutions++;
-      ctx.onLenientPiece?.(type);
+      const memo = ctx.lenientTraversalMemo;
+      if (memo) memo.degradedReads++;
+      if (ctx.onLenientPiece !== undefined) ctx.onLenientPiece(type);
+      else if (ctx.onLenientPieceOnce !== undefined && !memo?.notified.has(type)) {
+        memo?.notified.add(type);
+        ctx.onLenientPieceOnce(type);
+      }
     }
     if (
       mapped !== null &&
@@ -2943,9 +3031,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // — fixed shape, literal-index access, length = the arity constant
   // (SEMANTICS.md). The flag keeps tuple shapes distinct from numeric-keyed
   // object records (JSON must serialize a tuple as an ARRAY) and is why
-  // interning happens through the tuple-aware path. Optional/rest elements
-  // have no fixed shape and stay unmapped; element types follow record-field
-  // rules (no void/dyn).
+  // interning happens through the tuple-aware path. Bounded optional tuples
+  // use checked arrays below; other rest layouts retain their existing fence.
+  // Required element types follow record-field rules.
   if (checker.isTupleType(widened)) {
     const ref = widened as ts.TupleTypeReference;
     // elementFlags live on the tuple SHAPE: a direct tuple type carries
@@ -2992,7 +3080,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         return arrayOf(first);
       return null;
     }
-    // Optional/rest elements have no fixed native tuple layout.
+    // Optional positions have a variable length: an omitted trailing
+    // element differs from an explicit undefined. Use the checked array
+    // representation, preserving both holes and aliases of typed tuples.
+    // Native tuple sources retain their existing fixed-layout write guards.
+    if (
+      flags.some((flag) => (flag & ts.ElementFlags.Optional) !== 0) &&
+      flags.every((flag) => (flag & (ts.ElementFlags.Required | ts.ElementFlags.Optional)) !== 0)
+    ) {
+      return DYN;
+    }
+    // Other rest elements have no admitted native tuple layout.
     if (tupleShape.elementFlags.some((f) => !(f & ts.ElementFlags.Required))) {
       return null;
     }
@@ -5760,6 +5858,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const knownRecursive = unions.recursiveUnionFor(widened);
     if (knownRecursive !== undefined) return { kind: "union", unionId: knownRecursive };
     if (unions.inProgress.has(widened)) {
+      if (ctx.lenientTraversalMemo) ctx.lenientTraversalMemo.recursiveReads++;
       return {
         kind: "union",
         unionId: unions.recursiveRef(widened, () => checkerTypeDescription(widened, ctx)),
@@ -6771,6 +6870,11 @@ export function restTupleElementTypes(type: ts.Type, ctx: TypeMapperCtx): ts.Typ
   return restTupleElements(type, ctx)?.map((e) => e.type) ?? null;
 }
 
+/** A bounded tuple whose actual length can omit trailing positions. */
+export function optionalTupleType(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  return restTupleElements(type, ctx)?.some((element) => element.optional) === true;
+}
+
 /** restTupleElementTypes with each position's optionality: a rest tuple
  * may end in optional positions (`[A, B?]`, `Parameters<(a: A, b?: B) =>
  * R>`), which flatten to `T | undefined` slots exactly as the function
@@ -7203,6 +7307,11 @@ function mapBoundKeyofNeverConditional(type: ts.Type, ctx: TypeMapperCtx): IrTyp
 function mapBoundMappedType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, resolveTypeParamTs, shapes, unions } = ctx;
   if (!resolveTypeParamTs || !isMappedShape(widened)) return null;
+  // The checker already instantiated these members. The declaration's
+  // original source parameter is not a binding of this alias instance;
+  // looking it up would make a concrete record appear scope-sensitive.
+  // Its ordinary field mapping below still resolves any outer parameters.
+  if (resolvedMappedAlias(widened, ctx)) return null;
   const symbol = widened.getSymbol();
   const node = symbol
     ? symbol.declarations.find((d): d is ts.MappedTypeNode => ts.isMappedTypeNode(d))
@@ -8718,6 +8827,7 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // frame completes (finalizeRecursive below). Backends represent records
   // as heap references, so the self-reference is an ordinary pointer.
   if (shapes.inProgress.has(widened)) {
+    if (ctx.lenientTraversalMemo) ctx.lenientTraversalMemo.recursiveReads++;
     return {
       kind: "record",
       shapeId: shapes.recursiveRef(widened, () => checkerTypeDescription(widened, ctx)),

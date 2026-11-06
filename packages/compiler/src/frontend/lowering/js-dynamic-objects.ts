@@ -10,6 +10,8 @@
  *   `Object.defineProperties(o, ...)` (ansi-styles' `assembleStyles`).
  *   The object literals nested in its property values belong to the same
  *   value graph and are marked with it;
+ * - an unannotated object literal whose named primitive field changes
+ *   representation through a literal write, such as false to "node";
  * - a class whose only member is a constructor that returns a value and
  *   never reads `this` (chalk's `class Chalk { constructor(options) {
  *   return chalkFactory(options); } }`): `new C()` answers whatever the
@@ -29,6 +31,7 @@ import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { newFnCtx } from "./function-context.js";
+import { hasJsTypeAnnotation } from "./lower-stmts.js";
 
 const SCANNED_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.VariableDeclaration,
@@ -52,6 +55,15 @@ function isLiteralKey(node: ts.Expression): boolean {
 
 function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
   return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
+}
+
+function primitiveLiteralKind(expression: ts.Expression): "boolean" | "string" | "number" | null {
+  const node = unparenthesized(expression);
+  if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword)
+    return "boolean";
+  if (ts.isStringLiteralLike(node)) return "string";
+  if (ts.isNumericLiteral(node)) return "number";
+  return null;
 }
 
 /** `class C { constructor(...) { ...; return value; } }` with nothing else:
@@ -114,6 +126,7 @@ export function jsDynamicDeclarations(
   for (const file of files) {
     if (!isJsSourceFile(file) || file.isDeclarationFile) continue;
     const literals = new Map<ts.Symbol, ts.ObjectLiteralExpression>();
+    const mixedWrites: { symbol: ts.Symbol; name: string; kind: string }[] = [];
     const reshaped = new Set<ts.Symbol>();
     const receiver = (expression: ts.Expression | undefined): void => {
       if (expression === undefined) return;
@@ -144,6 +157,24 @@ export function jsDynamicDeclarations(
           const left = unparenthesized(node.left);
           if (ts.isElementAccessExpression(left) && !isLiteralKey(left.argumentExpression))
             receiver(left.expression);
+          if (
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isPropertyAccessExpression(left) &&
+            ts.isIdentifier(left.expression)
+          ) {
+            const symbol = checker.getSymbolAtLocation(left.expression);
+            const decl = symbol?.valueDeclaration;
+            const kind = primitiveLiteralKind(node.right);
+            if (
+              symbol !== undefined &&
+              decl !== undefined &&
+              ts.isVariableDeclaration(decl) &&
+              decl.type === undefined &&
+              !hasJsTypeAnnotation(decl) &&
+              kind !== null
+            )
+              mixedWrites.push({ symbol, name: left.name.text, kind });
+          }
           return;
         }
         if (ts.isDeleteExpression(node)) {
@@ -165,6 +196,17 @@ export function jsDynamicDeclarations(
       },
       SCANNED_KINDS,
     );
+    for (const write of mixedWrites) {
+      const literal = literals.get(write.symbol);
+      if (literal === undefined) continue;
+      for (const property of literal.properties.nodes) {
+        if (!ts.isPropertyAssignment(property)) continue;
+        if (!ts.isIdentifier(property.name) && !ts.isStringLiteralLike(property.name)) continue;
+        if (property.name.text !== write.name) continue;
+        const initial = primitiveLiteralKind(property.initializer);
+        if (initial !== null && initial !== write.kind) reshaped.add(write.symbol);
+      }
+    }
     for (const symbol of reshaped) {
       const literal = literals.get(symbol);
       if (literal !== undefined) markNested(literal, out);

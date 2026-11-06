@@ -110,6 +110,8 @@ static uint64_t scr_map_identity(const ScrMap *m, uint64_t key) {
     const ScrUnion *u = (const ScrUnion *)scr_map_slot_to_ptr(key);
     return scr_map_slot_from_ptr(scr_union_peek(u));
   }
+  if (m->key_kind == SCR_MAP_KEY_SOURCE_RECORD)
+    return scr_map_slot_from_ptr(scr_record_source_view_identity(scr_map_slot_to_ptr(key)));
   if (m->key_kind == SCR_MAP_KEY_CLOSURE)
     return scr_map_slot_from_ptr(scr_closure_identity(scr_map_slot_to_ptr(key)));
   return key;
@@ -165,6 +167,7 @@ static uint64_t scr_map_hash_union(const ScrMap *m, const ScrUnion *key) {
   case SCR_MAP_KEY_F64: return scr_key_word_hash(scr_map_f64_bits(scr_map_slot_to_f64(key->slot)));
   case SCR_MAP_KEY_NULL:
   case SCR_MAP_KEY_UNDEFINED: return scr_key_word_hash((uint64_t)kind);
+  case SCR_MAP_KEY_SOURCE_RECORD: return scr_key_word_hash(scr_map_slot_from_ptr(scr_record_source_view_identity(scr_union_peek(key))));
   case SCR_MAP_KEY_CLOSURE: return scr_key_word_hash(scr_map_slot_from_ptr(scr_closure_identity(scr_union_peek(key))));
   default: return scr_key_word_hash(key->slot);
   }
@@ -172,7 +175,19 @@ static uint64_t scr_map_hash_union(const ScrMap *m, const ScrUnion *key) {
 
 static bool scr_map_union_eq(const ScrMap *m, const ScrUnion *a, const ScrUnion *b) {
   ScrMapKeyKind kind = (ScrMapKeyKind)m->ops->union_keys[a->tag];
-  if (kind != (ScrMapKeyKind)m->ops->union_keys[b->tag]) return false;
+  ScrMapKeyKind other = (ScrMapKeyKind)m->ops->union_keys[b->tag];
+  if ((kind == SCR_MAP_KEY_SOURCE_RECORD || other == SCR_MAP_KEY_SOURCE_RECORD) &&
+      (kind == SCR_MAP_KEY_SOURCE_RECORD || kind == SCR_MAP_KEY_REF) &&
+      (other == SCR_MAP_KEY_SOURCE_RECORD || other == SCR_MAP_KEY_REF)) {
+    /* Match each arm's hash normalization. Ordinary reference arms keep
+     * their native pointer identity, even in a mixed-key union. */
+    void *left = scr_union_peek(a);
+    void *right = scr_union_peek(b);
+    if (kind == SCR_MAP_KEY_SOURCE_RECORD) left = scr_record_source_view_identity(left);
+    if (other == SCR_MAP_KEY_SOURCE_RECORD) right = scr_record_source_view_identity(right);
+    return left == right;
+  }
+  if (kind != other) return false;
   switch (kind) {
   case SCR_MAP_KEY_STR: return scr_str_eq(scr_union_peek(a), scr_union_peek(b));
   case SCR_MAP_KEY_BIGINT: return scr_bigint_eq(scr_union_peek(a), scr_union_peek(b));
@@ -845,7 +860,8 @@ static void scr_map_reserve_append(ScrMap *m) {
 
 static bool scr_map_ref_key(ScrMapKeyKind kind) {
   return kind == SCR_MAP_KEY_REF || kind == SCR_MAP_KEY_UNION_REF || kind == SCR_MAP_KEY_DYN ||
-         kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE || kind == SCR_MAP_KEY_CLOSURE;
+         kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE || kind == SCR_MAP_KEY_CLOSURE ||
+         kind == SCR_MAP_KEY_SOURCE_RECORD;
 }
 
 static void scr_map_release_key(ScrMap *m, uint64_t key) {

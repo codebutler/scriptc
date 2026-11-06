@@ -48,6 +48,42 @@ export function blobClassOf(lowerer: Lowerer, node: ts.Expression): BlobClass | 
   return null;
 }
 
+/** Canonical prototype values and the one admitted borrowed reader. */
+export function lowerBlobPrototypeRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  const loc = locOf(expr);
+  const cls = expr.name.text === "prototype" ? blobClassOf(lowerer, expr.expression) : null;
+  if (cls !== null)
+    return {
+      kind: "libCall",
+      fn: "dyn.stdlibPrototype",
+      args: [{ kind: "strLit", value: cls, type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
+  const prototype = expr.expression;
+  if (
+    expr.name.text !== "arrayBuffer" ||
+    !ts.isPropertyAccessExpression(prototype) ||
+    prototype.name.text !== "prototype" ||
+    blobClassOf(lowerer, prototype.expression) === null
+  )
+    return null;
+  return {
+    kind: "libCall",
+    fn: "dyn.builtinMethod",
+    args: [
+      { kind: "strLit", value: "Blob", type: STRING, loc },
+      { kind: "strLit", value: "arrayBuffer", type: STRING, loc },
+    ],
+    type: DYN,
+    loc,
+  };
+}
+
 /** The class of a stdlib Blob/File-typed receiver, or null. */
 function blobReceiverClass(lowerer: Lowerer, node: ts.Expression): BlobClass | null {
   const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node));
@@ -152,6 +188,12 @@ export function fenceStaticBlobMember(
   access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   use: "read" | "call",
 ): IrExpr | null {
+  if (
+    use === "read" &&
+    ts.isPropertyAccessExpression(access) &&
+    lowerBlobPrototypeRead(lowerer, access) !== null
+  )
+    return null;
   const cls = blobReceiverClass(lowerer, access.expression);
   if (cls === null) return null;
   const member = memberNameOf(access);

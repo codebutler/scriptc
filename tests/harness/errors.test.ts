@@ -2790,3 +2790,127 @@ console.log("after");
     );
   });
 });
+
+describe("Error-family prototype boundaries", () => {
+  test("borrowing toString for unmodeled native objects stays unavailable", async () => {
+    const r = await compileAndRun(
+      "error-tostring-native-object-boundary",
+      `const stringify = Error.prototype.toString;
+try { stringify.call(new Date(0)); }
+catch (error) { console.log(error.code, error.message); }
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "SC2020 Error.prototype.toString on this native object is not supported yet\n",
+    );
+  });
+
+  test("base Error constructor prototype reflection stays unavailable", async () => {
+    const r = await compileAndRun(
+      "error-constructor-prototype-boundary",
+      `const Constructor = Error;
+try { Object.getPrototypeOf(Constructor); }
+catch (error) { console.log(error.message); }
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe("Object.getPrototypeOf on this value is not supported yet\n");
+  });
+
+  test("every canonical family prototype keeps the named mutation boundary", async () => {
+    const r = await compileAndRun(
+      "error-family-prototype-mutation-boundary",
+      `function change(Constructor) {
+  try { Constructor.prototype.name = "changed"; }
+  catch (error) { console.log(error.code, error.message); }
+}
+change(Error); change(TypeError); change(RangeError); change(SyntaxError);
+change(ReferenceError); change(EvalError); change(URIError);
+change(AggregateError); change(SuppressedError);
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      [
+        "Error",
+        "TypeError",
+        "RangeError",
+        "SyntaxError",
+        "ReferenceError",
+        "EvalError",
+        "URIError",
+        "AggregateError",
+        "SuppressedError",
+      ]
+        .map((family) => `SC2020 ${family}.prototype mutation is not supported yet\n`)
+        .join(""),
+    );
+  });
+});
+
+describe("Blob prototype boundaries", () => {
+  test("canonical prototype mutation and wider reflection stay unavailable", async () => {
+    const r = await compileAndRun(
+      "blob-prototype-boundaries",
+      `
+const blob = Blob.prototype;
+const file = File.prototype;
+function attempt(fn) { try { fn(); } catch (error) { console.log(error.message); } }
+attempt(() => Object.defineProperty(blob, "arrayBuffer", {value: () => 1}));
+attempt(() => Object.setPrototypeOf(file, null));
+attempt(() => Object.getOwnPropertyNames(blob));
+attempt(() => Object.keys(file));
+attempt(() => Object.defineProperty(new Blob([]), "arrayBuffer", {value: () => 1}));
+attempt(() => { const value = new Blob([]); value.arrayBuffer = async () => new ArrayBuffer(0); });
+console.log(Object.getPrototypeOf(new Blob([])) === blob);
+console.log(Object.getPrototypeOf(new File([], "f")) !== blob);
+console.log(Object.getPrototypeOf(Object.create(blob)) === blob);
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "Blob.prototype mutation is not supported yet\n" +
+        "File.prototype mutation is not supported yet\n" +
+        "Blob.prototype member reflection is not supported yet\n" +
+        "File.prototype member reflection is not supported yet\n" +
+        "Object.defineProperty called on non-object\n" +
+        "setting 'arrayBuffer' on a dynamic Blob is not supported yet\n" +
+        "true\ntrue\ntrue\n",
+    );
+  });
+});
+
+describe("Blob prototype reflection refusals", () => {
+  test("membership and borrowed prototype tests never report an incomplete answer", async () => {
+    const r = await compileAndRun(
+      "blob-prototype-key-reflection",
+      `
+function attempt(name, fn) {
+  try { console.log(name + ":unexpected:" + fn()); }
+  catch (error) { console.log(name + ":" + (/not supported/.test(error.message) ? "refused" : error.message)); }
+}
+attempt("hasOwn", () => Object.hasOwn(Blob.prototype, "size"));
+attempt("in", () => "size" in Blob.prototype);
+attempt("symbol", () => Object.hasOwn(File.prototype, Symbol.toStringTag));
+attempt("enumerable", () => Object.prototype.propertyIsEnumerable.call(Blob.prototype, "arrayBuffer"));
+attempt("isPrototypeOf", () => Object.prototype.isPrototypeOf.call(Blob.prototype, new Blob([])));
+console.log(Object.getPrototypeOf(new Blob([])) === Blob.prototype);
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "hasOwn:refused\nin:refused\nsymbol:refused\nenumerable:refused\nisPrototypeOf:refused\ntrue\n",
+    );
+  });
+});

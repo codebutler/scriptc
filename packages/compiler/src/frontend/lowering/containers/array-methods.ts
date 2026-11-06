@@ -46,6 +46,7 @@ import {
   positionNumber,
 } from "../optional-arguments.js";
 import { lowerArrayCopyWithin, lowerArrayFill } from "../array-indexed-mutation.js";
+import { lowerDynamicArraySlice } from "../array-slice.js";
 import { checkedIteratorPack, widenedIterableType } from "../expressions/array-literals.js";
 import { notIterableSpelling } from "../iterable-spelling.js";
 import {
@@ -226,10 +227,14 @@ function lowerArrayPosition(
   node: ts.Expression | undefined,
   defaultValue: IrExpr,
   subject: string,
+  allowDynamic = false,
 ): IrExpr {
   if (!node) return defaultValue;
   if (ts.isSpreadElement(node)) lowerer.noLowering(`${subject} with a spread argument`, node);
   const value = lowerPositionArgument(lowerer, node, defaultValue);
+  // Slice owns the full argument/length/conversion sequence when a bound
+  // is dynamic. Leave that value untouched until every argument has run.
+  if (allowDynamic && value.type.kind === "dyn") return value;
   if (!primitivePositionType(lowerer, value.type)) {
     lowerer.noLowering(`${subject} of '${lowerer.fmt(value.type)}' values`, node);
   }
@@ -928,7 +933,10 @@ export function lowerArrayMethodCall(
       | "reduce"
       | "reduceRight"
   ];
-  if (call.arguments.nodes.length < arity[0]! || call.arguments.nodes.length > arity[1]!) {
+  if (
+    name !== "slice" &&
+    (call.arguments.nodes.length < arity[0]! || call.arguments.nodes.length > arity[1]!)
+  ) {
     // The predicate/mapping HOFs lower the callback plus an optional
     // thisArg; the lib declares no third parameter, so a longer call is a
     // per-site refusal rather than a truncated lowering.
@@ -1243,15 +1251,26 @@ export function lowerArrayMethodCall(
   }
   if (name === "slice") {
     const receiver = lowerer.lowerExpr(access.expression);
-    const args = [
-      lowerArrayPosition(lowerer, call.arguments.nodes[0], numLit(0, loc), "array slice start"),
+    const args: [IrExpr, IrExpr] = [
+      lowerArrayPosition(
+        lowerer,
+        call.arguments.nodes[0],
+        numLit(0, loc),
+        "array slice start",
+        true,
+      ),
       lowerArrayPosition(
         lowerer,
         call.arguments.nodes[1],
         numLit(Infinity, loc),
         "array slice end",
+        true,
       ),
     ];
+    if (args.some((argument) => argument.type.kind === "dyn"))
+      return lowerDynamicArraySlice(lowerer, call, receiver, receiverIr, args);
+    if (call.arguments.nodes.length > 2)
+      lowerer.noLowering(`.slice with ${call.arguments.nodes.length} arguments`, call);
     return { kind: "arrIntrinsic", method: "slice", receiver, args, type: receiverIr, loc };
   }
   if (name === "splice") {

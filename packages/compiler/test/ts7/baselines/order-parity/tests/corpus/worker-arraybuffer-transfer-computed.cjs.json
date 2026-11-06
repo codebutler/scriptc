@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/worker-arraybuffer-transfer-computed.cjs"
+ ],
+ "diags": []
+}

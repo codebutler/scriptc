@@ -367,6 +367,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "module.cacheHas": "scr_module_cache_has",
   "module.cacheKeys": "scr_module_cache_keys",
   "perf.now": "scr_perf_now",
+  "perf.timeOrigin": "scr_perf_time_origin",
   "perf.mark": "scr_perf_mark",
   "perf.measure": "scr_perf_measure",
   "perf.entries": "scr_perf_entries",
@@ -851,6 +852,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  "record.sourceCloneCheck": "scr_record_source_view_refuse_clone",
   "record.sourceSpread": "scr_record_source_spread",
   "record.sourceShare": "scr_record_source_share",
   "record.sourceNote": "scr_record_source_note",

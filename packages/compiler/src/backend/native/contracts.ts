@@ -189,6 +189,10 @@ export interface CcOptions {
   /** A standard library prototype object read as a value in a JavaScript
    * source (`Date.prototype`): compiles scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** Canonical Blob/File prototypes and the borrowed Blob reader. */
+  blobPrototypeValue?: boolean;
+  /** Epoch origin paired with the process monotonic anchor. */
+  perfOrigin?: boolean;
   /** A computed read of the global object, or `… in globalThis`: compiles
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c. */
@@ -480,6 +484,7 @@ export interface LibArchiveOptions {
   /** See CcOptions.mutableBuffers: the archive carries the buffer views
    * registry, scr_js_buffers.c. */
   mutableBuffers?: boolean;
+  perfOrigin?: boolean;
 }
 
 export interface NativeArtifactDependency {

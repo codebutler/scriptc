@@ -1,4 +1,6 @@
+import { sourceAssertionShapes } from "../source-record-views.js";
 /* instanceof and in, including private-name and runtime-key in. */
+import { standardErrorFamilyName } from "../class-prototypes.js";
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
 import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
@@ -889,7 +891,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     let test = caughtInstanceOf(target);
     // A thrown checked-dynamic object whose prototype chain reaches
     // Error.prototype (an ES5 constructor function inheriting from it).
-    if (target.def.name === "%Error" && lowerer.errorPrototypeValues) {
+    if (standardErrorFamilyName(target.def.name) !== null && lowerer.errorPrototypeValues) {
       const value = varRef(caughtLocal.id, CAUGHT, loc);
       test = {
         kind: "logical",
@@ -901,8 +903,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           left: { kind: "caughtTest", value, test: "dynamic", type: BOOL, loc },
           right: {
             kind: "libCall",
-            fn: "dyn.inheritsErrorPrototype",
-            args: [{ kind: "caughtToDyn", value, type: DYN, loc }],
+            fn: "dyn.errInstanceof",
+            args: [
+              { kind: "caughtToDyn", value, type: DYN, loc },
+              numLit(RUNTIME_ERROR_CLASSES.get(target.def.name)!.kind, loc),
+            ],
             type: BOOL,
             loc,
           },
@@ -1699,6 +1704,30 @@ export function lowerInExpression(
   // NAME, not a value.
   if (ts.isPrivateIdentifier(expr.left)) {
     return lowerPrivateIn(lowerer, expr, expr.left, loc);
+  }
+  const sourceType = lowerer.mapTypeOf(lowerer.typeOf(expr.right));
+  if (sourceType?.kind === "record" && sourceAssertionShapes(lowerer).has(sourceType.shapeId)) {
+    // Evaluate the key before the receiver. Dynamic membership keeps
+    // inherited data properties distinct from Object.hasOwn.
+    const key = lowerer.declareHiddenLocal("%sourceInKey", DYN);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: key.id, init: lowerer.lowerExprExpecting(expr.left, DYN), loc },
+      ],
+      result: {
+        kind: "libCall",
+        fn: "dyn.hasKeyComputed",
+        args: [
+          { kind: "dynFrom", value: lowerer.lowerExpr(expr.right), liveRef: true, type: DYN, loc },
+          varRef(key.id, DYN, loc),
+        ],
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
   }
   // `… in <global object>`: presence on the runtime's global object. Node HAS
   // the globals the native runtime does not implement, so the answer must not

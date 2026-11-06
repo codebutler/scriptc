@@ -1,0 +1,6 @@
+generic-record-void-existing-callback.ts:6:18 - error SC1090: passing an existing void callback to an erased generic record call is not supported yet
+
+  5 | const operation: () => void = () => 42;
+  6 | store.call<void>(operation);
+    |                  ^~~~~~~~~
+  7 | 

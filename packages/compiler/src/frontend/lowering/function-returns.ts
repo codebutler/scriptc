@@ -129,22 +129,56 @@ export function producesConstructor(lowerer: Lowerer, type: ts.Type): boolean {
   return false;
 }
 
-/** Whether a return of `decl` itself (not of a nested function) is a bare
- * read of a JavaScript variable whose writes the checker does not
- * constrain. A string that is only appended to stays a string. */
+/** Reads/calls rooted in an unannotated JS binding with unconstrained writes.
+ * This inspects provenance only; it never lowers or evaluates an expression. */
+export function readsOpenJsBinding(
+  lowerer: Lowerer,
+  value: ts.Expression | undefined,
+  members = true,
+): boolean {
+  let member = false;
+  while (value) {
+    if (ts.isParenthesizedExpression(value)) value = value.expression;
+    else if (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value)) {
+      member = true;
+      value = value.expression;
+    } else if (ts.isCallExpression(value)) {
+      let callee = value.expression;
+      while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+      if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee))
+        return false;
+      member = true;
+      value = callee.expression;
+    } else break;
+  }
+  if (member && !members) return false;
+  if (!value || !ts.isIdentifier(value)) return false;
+  const binding = lowerer.resolveValueSymbol(value)?.valueDeclaration;
+  return (
+    binding !== undefined &&
+    ts.isVariableDeclaration(binding) &&
+    jsBindingHasOpenWrites(lowerer, binding) &&
+    !jsBindingAppendsOnly(lowerer, binding)
+  );
+}
+
+/** Whether a return reads a JavaScript variable whose writes the checker
+ * does not constrain, or a member/call reached through it. Replacing the
+ * receiver can also replace its methods' results. Operators and unrelated
+ * calls keep their own result types; append-only strings stay strings. */
 function returnsOpenJsBinding(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
   let open = false;
-  const opens = (value: ts.Expression | undefined): boolean => {
-    while (value && ts.isParenthesizedExpression(value)) value = value.expression;
-    if (!value || !ts.isIdentifier(value)) return false;
-    const binding = lowerer.resolveValueSymbol(value)?.valueDeclaration;
-    return (
-      binding !== undefined &&
-      ts.isVariableDeclaration(binding) &&
-      jsBindingHasOpenWrites(lowerer, binding) &&
-      !jsBindingAppendsOnly(lowerer, binding)
-    );
-  };
+  // A contextual callable slot can carry an explicit JSDoc return contract
+  // even when the lambda/method has no own @returns tag. Keep that ABI.
+  const memberContract =
+    /@type\b/.test(ts.getSourceFileOfNode(decl).text.slice(decl.pos, ts.tokenStartOfNode(decl))) ||
+    ((ts.isArrowFunction(decl) || ts.isFunctionExpression(decl)) &&
+      lowerer.checker.getContextualType(decl) !== undefined) ||
+    (ts.isMethodDeclaration(decl) &&
+      ts.isObjectLiteralExpression(decl.parent) &&
+      lowerer.checker.getContextualType(decl.parent) !== undefined);
+  const opens = (value: ts.Expression | undefined): boolean =>
+    readsOpenJsBinding(lowerer, value, !memberContract);
   const scan = (node: ts.Node): void => {
     if (open || (node !== decl && ts.isFunctionLike(node))) return;
     if (ts.isReturnStatement(node) && opens(node.expression)) open = true;

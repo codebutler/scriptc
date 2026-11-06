@@ -1015,6 +1015,31 @@ export function emitDynamicExpr(
       const def = host.unionsById.get(e.unionId);
       if (!def)
         throw new InternalCompilerError(`llvm emitter bug: equality of unknown union ${e.unionId}`);
+      if (
+        def.arms.some(
+          (arm) =>
+            arm.kind === "record" && host.shapeHost.recordViews?.sourceTargets.has(arm.shapeId),
+        )
+      ) {
+        // Different static arms may view the same JavaScript object.
+        // Box each arm live so tags do not become object identities.
+        const box = host.liveDynUnionRefAdapter({ kind: "union", unionId: def.id });
+        const left = B.tmp(),
+          right = B.tmp(),
+          equal = B.tmp();
+        B.line(`${left} = call ptr @${box}(ptr ${l.name})`);
+        B.line(`${right} = call ptr @${box}(ptr ${r.name})`);
+        const compare = e.sameValue ? "scr_dyn_same_value" : "scr_dyn_strict_eq";
+        host.declare(`declare zeroext i1 @${compare}(ptr, ptr)`);
+        host.declare(`declare void @scr_dyn_release(ptr)`);
+        B.line(`${equal} = call zeroext i1 @${compare}(ptr ${left}, ptr ${right})`);
+        B.line(`call void @scr_dyn_release(ptr ${left})`);
+        B.line(`call void @scr_dyn_release(ptr ${right})`);
+        if (!e.negated) return { name: equal, type: e.type };
+        const negated = B.tmp();
+        B.line(`${negated} = xor i1 ${equal}, true`);
+        return { name: negated, type: e.type };
+      }
       const nullable = host.nullableUnions.get(def.id);
       if (nullable && isPointerIdentityArm(nullable)) {
         // Object identity, and NULL === NULL for the unit arm: one compare.

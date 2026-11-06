@@ -60,6 +60,8 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
     ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
+    ...(features.blobPrototypeValue ? { blobPrototypeValue: true } : {}),
+    ...(features.perfOrigin ? { perfOrigin: true } : {}),
     ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
     ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),

@@ -815,6 +815,15 @@ const STDIO_EXTENDED_NAMES: ReadonlySet<string> = new Set(["setEncoding", "resiz
 /** The libCall nodes the rules below test. */
 type LibCallNode = IrExpr & { kind: "libCall" };
 
+function isBlobPrototypeCall(node: LibCallNode): boolean {
+  const owner = node.args[0];
+  return (
+    (node.fn === "dyn.stdlibPrototype" || node.fn === "dyn.builtinMethod") &&
+    owner?.kind === "strLit" &&
+    (owner.value === "Blob" || owner.value === "File")
+  );
+}
+
 /** A condition over several nodes of the module (a WebCrypto call and an
  * algorithm name): the scan's one walk shows it every expression, and the
  * feature is set when `result` answers true after the walk. */
@@ -1119,6 +1128,7 @@ const RUNTIME_FEATURE_RULES = {
   /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
   dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
   dynAsync: rule({
+    libCall: isBlobPrototypeCall,
     initial: (mod) =>
       mod.workers === true ||
       mod.functions.some(
@@ -1169,6 +1179,7 @@ const RUNTIME_FEATURE_RULES = {
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c): `Date.prototype`. */
   stdlibPrototypeValue: rule({ fns: ["dyn.stdlibPrototype"] }),
+  blobPrototypeValue: rule({ libCall: isBlobPrototypeCall }),
   /** The dynamic global object's answer for the Node globals the native
    * runtime does not implement (scr_global_host_absent.c, plus the
    * SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c): a computed read of
@@ -1431,6 +1442,7 @@ const RUNTIME_FEATURE_RULES = {
   parseArgs: rule({ fns: [...PARSE_ARGS_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS] }),
   /** perf_hooks event-loop metrics (eventLoopUtilization,
    * monitorEventLoopDelay): scr_perf_loop.c. */
+  perfOrigin: rule({ fns: ["perf.timeOrigin"] }),
   perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
   /** scr_pki.c over the mbedTLS archive: asymmetric KeyObjects and
    * signatures. */
@@ -1653,6 +1665,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,
+    blobPrototypeValue: false,
     hostAbsentGlobals: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
@@ -1687,6 +1700,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     nodeIsland: false,
     nodeTest: false,
     parseArgs: false,
+    perfOrigin: false,
     perfLoop: false,
     pki: false,
     ed25519: false,

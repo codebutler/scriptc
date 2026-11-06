@@ -47,6 +47,14 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
+  test("epoch origin selects its runtime variant without changing now-only programs", () => {
+    const mod = module();
+    mod.functions[0]!.body.push(call("perf.now"));
+    expect(moduleRuntimeFeatures(mod).perfOrigin).toBe(false);
+    mod.functions[0]!.body.push(call("perf.timeOrigin"));
+    expect(moduleRuntimeFeatures(mod).perfOrigin).toBe(true);
+  });
+
   test("links the inspect unit for a BigInt rendered in Node's form", () => {
     const mod = module();
     mod.functions[0]!.body.push(call("bigint.inspect"));
@@ -258,6 +266,32 @@ describe("runtime feature snapshots", () => {
       expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(true);
     for (const key of ["length", "name", "nope"])
       expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
+  });
+
+  test("only reflected Blob/File sites select the Blob prototype runtime", () => {
+    for (const owner of ["Blob", "File", "Date", "Error"]) {
+      for (const fn of ["dyn.stdlibPrototype", "dyn.builtinMethod"] as const) {
+        const mod = module();
+        mod.functions[0]!.body.push({
+          kind: "exprStmt",
+          loc,
+          expr: {
+            kind: "libCall",
+            fn,
+            type: DYN,
+            loc,
+            args: [{ kind: "strLit", value: owner, type: STRING, loc }],
+          },
+        });
+        const features = moduleRuntimeFeatures(mod);
+        const blob = owner === "Blob" || owner === "File";
+        expect(features.blobPrototypeValue).toBe(blob);
+        expect(features.dynAsync).toBe(blob);
+      }
+    }
+    const ordinary = module();
+    ordinary.functions[0]!.body.push(call("blob.new"), call("blob.arrayBuffer"));
+    expect(moduleRuntimeFeatures(ordinary).blobPrototypeValue).toBe(false);
   });
 
   test("the JavaScript object model build owns the buffer views registry calls", () => {

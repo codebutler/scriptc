@@ -357,6 +357,13 @@ typedef struct ScrJsBufferOps {
    * false with the exception pending on a bad receiver or argument. */
   bool (*resize)(ScrBytes *owner, double length);
   bool (*grow)(ScrBytes *owner, double length);
+  /* Move fixed owned storage into a worker message. The caller validates
+   * the whole list before cloning, then commits entries in list order.
+   * A getter may have marked or detached this owner in between. */
+  bool (*message_take)(ScrBytes *owner, uint8_t **data, size_t *length);
+  /* Preserve declared view bounds if a getter detached its listed owner
+   * before the serializer reached the view. */
+  void (*message_view_bounds)(const ScrBytes *view, size_t *offset, size_t *length);
 } ScrJsBufferOps;
 
 extern SCR_TL const ScrJsBufferOps *scr_js_buffer_ops;

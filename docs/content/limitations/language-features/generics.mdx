@@ -8,4 +8,8 @@
   A function expression with no parameters that reads `arguments` compiles only when its value is asserted to, or contextually typed as, one fixed-arity signature; `arguments` is then that signature's tuple.
   Forwarding it with `fn.apply(this, arguments)` passes `this` through.
   Reading `fn.name` on a wrapped function requires its name to be known where the wrapper is called, such as a function declaration or a `const`-bound function.
-  `Parameters<F>` over a signature with optional or array-typed rest parameters is unsupported, because that tuple has no fixed length.
+  Bounded tuple values with optional positions, including `Parameters<F>` for optional parameters, use checked arrays and can be spread into callable values.
+  They preserve omitted positions, explicit `undefined`, and aliases; an alias of a fixed native tuple still cannot change that tuple's length or fixed field layout.
+  Reading an optional-tuple rest parameter as an array remains unsupported because its flattened calling convention does not retain the original argument count.
+  Destructuring through an empty-array fallback for a nullable optional tuple, such as `let [a, b] = options || []`, remains unsupported.
+  Array-typed rest parameters retain their existing restrictions.

@@ -96,6 +96,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // A standard library prototype object read as a value in JavaScript
   // (`Date.prototype`); it calls the invoke unit's interned method table.
   ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
+  ["scr_blob_prototype.c", "blobPrototypeValue"],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],
@@ -275,6 +276,9 @@ function withJsObjectModel(variants) {
 
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
+  if (source === "scr_lib.c") {
+    variants.push({ id: "perf-origin", when: { perfOrigin: true }, defines: ["SCR_PERF_ORIGIN"] });
+  }
   // scr_json.c builds one object per flavor (and workers mode): its paths
   // for Node island handles and handle classes call through tables that
   // scr_node_island_handle.c and scr_dyn_handle_class.c install when a

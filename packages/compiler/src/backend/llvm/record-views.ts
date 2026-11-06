@@ -38,11 +38,14 @@ import {
   type IrType,
 } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
+import { sourceRecordViewTargets } from "../../ir/source-record-views.js";
 import type { BlockBuilder } from "./blocks.js";
 
 export interface RecordViews {
   /** Shape ids whose values may be views. */
   readonly targets: ReadonlySet<string>;
+  /** Targets backed by the original dynamic object rather than native offsets. */
+  readonly sourceTargets: ReadonlySet<string>;
   /** The record shapes whose capsules convert to a view of `target`. */
   sources(target: string): readonly string[];
   /** Whether `target` may be a PARTIAL view of `source`: some of its
@@ -62,6 +65,7 @@ export const PARTIAL_VIEW_ABSENT =
 
 export const NO_RECORD_VIEWS: RecordViews = {
   targets: new Set(),
+  sourceTargets: new Set(),
   sources: () => [],
   partial: () => false,
   partialTargets: new Set(),
@@ -219,7 +223,18 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
         return true;
       },
     });
-  if ((checked.length === 0 || boxed.length === 0) && partialPairs.length === 0)
+  const requestedSources = sourceRecordViewTargets(mod);
+  const sourceTargets = new Set(
+    [...requestedSources].filter((id) => {
+      const shape = shapes.get(id);
+      return shape !== undefined && plainShape(shape) && !options.excluded(id);
+    }),
+  );
+  if (
+    (checked.length === 0 || boxed.length === 0) &&
+    partialPairs.length === 0 &&
+    sourceTargets.size === 0
+  )
     return NO_RECORD_VIEWS;
   const reachable = closure(checked);
   const live = closure(boxed);
@@ -282,8 +297,8 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
       if (partial.size === 0) partials.delete(id);
     }
   }
-  if (sources.size === 0) return NO_RECORD_VIEWS;
-  const targets = new Set(sources.keys());
+  if (sources.size === 0 && sourceTargets.size === 0) return NO_RECORD_VIEWS;
+  const targets = new Set([...sources.keys(), ...sourceTargets]);
   // The target fields some partial source lacks: their presence test is a
   // runtime view probe, and their slot lookup traps.
   const missing = new Map<string, Set<string>>();
@@ -297,23 +312,37 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
     }
     missing.set(id, absent);
   }
+  for (const id of sourceTargets)
+    missing.set(id, new Set(shapes.get(id)?.fields.map((field) => field.name) ?? []));
   return {
     targets,
+    sourceTargets,
     sources: (target) => sources.get(target) ?? [],
     partial: (target, source) => partials.get(target)?.has(source) === true,
-    partialTargets: new Set(partials.keys()),
+    partialTargets: new Set([...partials.keys(), ...sourceTargets]),
     partialMissing: (target, field) => missing.get(target)?.has(field) === true,
   };
 }
 
-/** Lines setting `dest` (i1) to whether the record `obj` of a view target
- * type is a view. A view's rc word carries the frozen bit (scr_rc.h
- * SCR_RC_FROZEN), which no other value of such a type has: view targets
- * are never freezable, and a word with the program-lifetime bit (an
- * immortal one included) is no view, so a view's word is the frozen bit
- * plus a count. The
- */
-export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: string): string[] {
+/** Lines setting `dest` (i1) to whether `obj` is a view. Nonfreezable
+ * targets use the frozen bit plus a count, without the program-lifetime
+ * bit. Freezable source targets require `sourceLookup`: an ordinary frozen
+ * native record shares that header pattern but has no retained source. */
+export function recordViewTestLines(
+  sizeType: "i32" | "i64",
+  obj: string,
+  dest: string,
+  sourceLookup?: (declaration: string) => void,
+): string[] {
+  // A freezable source target also admits ordinary frozen native records.
+  // Their header mark is not a view discriminator; consult the owned source.
+  if (sourceLookup) {
+    sourceLookup(`declare ptr @scr_record_source_view_source(ptr)`);
+    return [
+      `  ${dest}.source = call ptr @scr_record_source_view_source(ptr ${obj})`,
+      `  ${dest} = icmp ne ptr ${dest}.source, null`,
+    ];
+  }
   // The frozen bit with a count and no program-lifetime bit: one range.
   const [bit, span] =
     sizeType === "i64" ? ["4611686018427387904", "4294967296"] : ["1073741824", "1073741824"];
@@ -345,8 +374,9 @@ export function recordViewFieldPtr(
   outOfLine: boolean,
   cstr: (text: string) => string,
   partial = false,
+  freezableSource = false,
 ): string {
-  if (outOfLine) {
+  if (outOfLine && !freezableSource) {
     const field = "scr_record_view_field";
     declare(`declare ptr @${field}(ptr, ${sizeType}, ${sizeType})`);
     const ptr = B.tmp();
@@ -367,7 +397,13 @@ export function recordViewFieldPtr(
   const own = B.tmp();
   B.line(`${own} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${slotIndex}`);
   const isView = B.tmp();
-  for (const line of recordViewTestLines(sizeType, obj, isView)) B.line(line.trimStart());
+  for (const line of recordViewTestLines(
+    sizeType,
+    obj,
+    isView,
+    freezableSource ? declare : undefined,
+  ))
+    B.line(line.trimStart());
   const from = B.currentLabel();
   const view = B.newLabel("rv.view");
   const join = B.newLabel("rv.join");

@@ -1,9 +1,10 @@
-`WeakMap` and `WeakSet` accept checked native objects and arrays, functions, numeric typed arrays, ArrayBuffers, native weak collections, and typed records, arrays, tuples, and classes that preserve identity through checked storage.
+`WeakMap` and `WeakSet` accept checked native objects and arrays, functions, numeric typed arrays, ArrayBuffers, Blob and File values, native weak collections, and typed records, arrays, tuples, and classes that preserve identity through checked storage.
 Copied values, other native handles, and symbol keys are unsupported.
 Constructor seeds support arrays; custom iterators and detached methods are unsupported.
 Weak collections do not retain their keys, but values that refer back to a key can keep it alive until deletion or collection release.
 
 `FinalizationRegistry` keeps its registrations: `register` and `unregister` check their arguments and answer as in Node.js.
+Blob and File values can be registration targets and unregister tokens.
 Its cleanup callbacks never run, which the ECMAScript specification allows.
 Program output matches Node.js, which runs cleanup callbacks only when its garbage collector decides to.
 Memory that a package frees only from a cleanup callback is not reclaimed until the program exits.

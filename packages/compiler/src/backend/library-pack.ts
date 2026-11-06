@@ -69,6 +69,7 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     ed25519: false,
     x509: options.x509 ?? false,
     webcrypto: false,
+    ...(options.perfOrigin === true ? { perfOrigin: true } : {}),
     perfLoop: false,
     tlsCa: false,
   };

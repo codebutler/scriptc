@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-mixed-property-writes.mjs"
+ ],
+ "diags": []
+}

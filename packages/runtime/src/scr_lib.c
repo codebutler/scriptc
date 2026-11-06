@@ -2252,8 +2252,21 @@ void scr_process_exit(double code) {
  * counters in Node's units. uptime anchors at load time (a constructor-
  * attribute monotonic stamp — the binary's own start, which is what
  * "the current Node.js process" means for a compiled program). */
+#ifdef SCR_PERF_ORIGIN
+static double scr_perf_origin_ms;
+static double scr_uptime_now_ms(void);
+static void scr_perf_capture_origin(double *anchor) {
+  const double before = scr_uptime_now_ms();
+  struct timespec realtime;
+  if (clock_gettime(CLOCK_REALTIME, &realtime) != 0)
+    scr_trap("performance.timeOrigin: CLOCK_REALTIME read failed");
+  const double after = scr_uptime_now_ms();
+  *anchor = before + (after - before) / 2.0;
+  scr_perf_origin_ms = (double)realtime.tv_sec * 1000.0 + (double)realtime.tv_nsec / 1e6;
+}
+#endif
 #ifdef _WIN32
-#if (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS)
+#if (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS) || defined(SCR_PERF_ORIGIN)
 /* The uptime anchor belongs to the host PROCESS, not to a library
  * instance. InitOnce keeps the lazy Windows spelling race-free when
  * several thread instances ask for the clock concurrently. */
@@ -2264,7 +2277,11 @@ static BOOL CALLBACK scr_uptime_anchor_once(PINIT_ONCE once, PVOID param,
   (void)once;
   (void)param;
   (void)ctx;
+#ifdef SCR_PERF_ORIGIN
+  scr_perf_capture_origin(&scr_uptime_t0_ms);
+#else
   scr_uptime_t0_ms = (double)GetTickCount64();
+#endif
   return TRUE;
 }
 static void scr_uptime_anchor_init(void) {
@@ -2292,12 +2309,30 @@ static double scr_uptime_now_ms(void) {
   return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
 }
 __attribute__((constructor)) static void scr_uptime_anchor_init(void) {
+#ifdef SCR_PERF_ORIGIN
+  scr_perf_capture_origin(&scr_uptime_t0_ms);
+#else
   scr_uptime_t0_ms = scr_uptime_now_ms();
+#endif
+}
+#endif
+
+#ifdef SCR_PERF_ORIGIN
+#ifdef _WIN32
+__attribute__((constructor)) static void scr_perf_origin_init(void) {
+  scr_uptime_anchor_init();
+}
+#endif
+double scr_perf_time_origin(void) {
+#ifdef _WIN32
+  scr_uptime_anchor_init();
+#endif
+  return scr_perf_origin_ms;
 }
 #endif
 
 double scr_process_uptime(void) {
-#if defined(_WIN32) && ((defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS))
+#if defined(_WIN32) && ((defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS) || defined(SCR_PERF_ORIGIN))
   scr_uptime_anchor_init();
 #elif defined(_WIN32)
   if (scr_uptime_t0_ms == 0) scr_uptime_anchor_init();
@@ -2309,7 +2344,7 @@ double scr_process_uptime(void) {
  * start (Node's timeOrigin anchor), fractional — the same monotonic
  * clock and anchor as uptime, in Node's performance.now units. */
 double scr_perf_now(void) {
-#if defined(_WIN32) && ((defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS))
+#if defined(_WIN32) && ((defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS) || defined(SCR_PERF_ORIGIN))
   scr_uptime_anchor_init();
 #elif defined(_WIN32)
   if (scr_uptime_t0_ms == 0) scr_uptime_anchor_init();

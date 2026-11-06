@@ -755,7 +755,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
+      runtime_abi: { version: 52, marker: "scr_runtime_abi_v52" },
       compiler: {
         command: compiler,
         identity: compilerVersion,
@@ -770,6 +770,7 @@ async function build() {
           "SCR_STREAM_WRITE_ERRORS",
           "SCR_STDIO_WRITE_SLOT",
           "SCR_NATIVE_REACTIONS",
+          "SCR_PERF_ORIGIN",
           "SCR_HANDLE_CLASSES",
           "SCR_YIN",
           "SCR_NODE_ISLANDS",

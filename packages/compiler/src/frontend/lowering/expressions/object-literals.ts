@@ -1,3 +1,4 @@
+import { checkedSourceRecordClone, sourceAssertionShapes } from "../source-record-views.js";
 import { keyedHelperName } from "../stable-names.js";
 import { dateJsonType, isDateJsonSource } from "../builtins/dates.js";
 import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -1708,7 +1709,7 @@ export function lowerObjectLiteral(
         }
         return lowerer.keyOrder.clone({
           kind: "recordClone",
-          source,
+          source: checkedSourceRecordClone(lowerer, source, loc),
           overrides,
           type,
           loc,
@@ -2153,6 +2154,57 @@ export function lowerObjectLiteral(
         srcLowered.type.kind === "dyn"
           ? lowerer.mapTypeOf(lowerer.typeOf(srcNode))
           : srcLowered.type;
+      // Native field copies cannot reproduce a retained object's own-key
+      // spread semantics. Check after evaluating this source, before any
+      // of its field reads or later contributors, without copying it.
+      const cloneChecks = (value: IrExpr): IrStmt[] => {
+        if (value.type.kind === "record") {
+          if (!sourceAssertionShapes(lowerer).has(value.type.shapeId)) return [];
+          return [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "record.sourceCloneCheck",
+                args: [value],
+                type: VOID,
+                loc: locOf(prop),
+              },
+              loc: locOf(prop),
+            },
+          ];
+        }
+        if (value.type.kind !== "union") return [];
+        const unionId = value.type.unionId;
+        return (lowerer.unions.get(unionId)?.arms ?? []).flatMap((arm, tag): IrStmt[] => {
+          if (arm.kind !== "record" || !sourceAssertionShapes(lowerer).has(arm.shapeId)) return [];
+          return [
+            {
+              kind: "if",
+              cond: {
+                kind: "unionIsTag",
+                value,
+                unionId,
+                tag,
+                negated: false,
+                type: BOOL,
+                loc: locOf(prop),
+              },
+              then: cloneChecks({
+                kind: "unionNarrow",
+                value,
+                unionId,
+                tag,
+                type: arm,
+                loc: locOf(prop),
+              }),
+              else_: null,
+              loc: locOf(prop),
+            },
+          ];
+        });
+      };
+      spreadStmts.push(...cloneChecks(srcLowered));
       // `...options.installConfig` — a spread of `Partial<X> | undefined`
       // (the optional-options merge idiom `{ ...DEFAULTS, ...overrides }`):
       // JS spreads nothing for the unit arm and copies present keys
@@ -3361,7 +3413,11 @@ function lowerUnionRecordClone(lowerer: Lowerer, expr: ts.ObjectLiteralExpressio
     }
     const clone: IrExpr = {
       kind: "recordClone",
-      source: { kind: "unionNarrow", value: ref, unionId: sourceType.unionId, tag, type: arm, loc },
+      source: checkedSourceRecordClone(
+        lowerer,
+        { kind: "unionNarrow", value: ref, unionId: sourceType.unionId, tag, type: arm, loc },
+        loc,
+      ),
       overrides,
       type: arm,
       loc,

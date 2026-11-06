@@ -131,6 +131,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     "-fno-strict-aliasing", // the emitted object model type-puns — see compileC's buildArgs
     "-Wno-deprecated-declarations",
     "-DSCR_LIB",
+    ...(opts.perfOrigin ? ["-DSCR_PERF_ORIGIN"] : []),
     ...(opts.threadInstances ? ["-DSCR_THREAD_INSTANCES"] : []),
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
     // The program's unit reads the JavaScript object model build

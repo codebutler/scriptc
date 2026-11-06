@@ -1,3 +1,4 @@
+import { sourceAssertionShapes } from "./source-record-views.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
@@ -107,6 +108,7 @@ import {
   RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
+import { readsOpenJsBinding } from "./function-returns.js";
 import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
@@ -301,12 +303,18 @@ import {
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
 import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
 import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
-import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
+import {
+  freezableRecordType,
+  isJsFreshLiteralFreeze,
+  lowerNativeFreeze,
+  noteUntypedIntegrity,
+} from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
 import {
   spreadNeedsRuntimeArity,
+  hasOptionalTupleSpreads,
   completeFuncValueArgs,
   checkedRestCallArgs,
   lowerSpreadArgsCall,
@@ -2363,12 +2371,30 @@ export function lowerCallThroughValue(
   callee: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  return overloadValueResult(
-    lowerer,
-    expr,
-    callee,
-    lowerCallThroughValueRaw(lowerer, expr, callee, loc),
-  );
+  // A literal-key API member reaches this fallback as a recordGet. Keep
+  // the original receiver only for the call expression; extracting the
+  // same property as a function still has the ordinary bare-call meaning.
+  let init: IrStmt | undefined;
+  let receiver: IrExpr | undefined;
+  if (
+    ts.isElementAccessExpression(expr.expression) &&
+    callee.kind === "recordGet" &&
+    sourceAssertionShapes(lowerer).has(callee.shapeId)
+  ) {
+    const local = lowerer.declareHiddenLocal("%computedApiReceiver", callee.obj.type);
+    init = { kind: "varDecl", localId: local.id, init: callee.obj, loc };
+    const reference = varRef(local.id, local.type, loc);
+    callee = { ...callee, obj: reference };
+    receiver = lowerer.coerceToExpected(reference, DYN);
+  }
+  let result = lowerCallThroughValueRaw(lowerer, expr, callee, loc);
+  if (receiver) {
+    if (result.kind !== "callValue" && result.kind !== "dynCall")
+      lowerer.unsupported("SC1090", expr, "computed structural API call form");
+    result = { ...result, receiver };
+  }
+  result = overloadValueResult(lowerer, expr, callee, result);
+  return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
 }
 
 /** A call through a VALUE of an OVERLOADED type: the value holds the set's
@@ -2503,7 +2529,13 @@ function lowerCallThroughValueRaw(
     const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
     return { kind: "dynCall", callee: boxed, calleeName, args, type: DYN, loc };
   }
-  const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
+  const erasedVoid =
+    isGenericCallableMemberType(lowerer.typeOf(expr.expression), lowerer.checker) &&
+    lowerer.irTypeOf(expr).kind === "void" &&
+    discardedCallResult(expr);
+  const args = erasedVoid
+    ? discardedGenericVoidArgs(lowerer, expr, callee.type)
+    : completeFuncValueArgs(lowerer, expr, callee.type, loc);
   return { kind: "callValue", callee, args, type: callee.type.ret, loc };
 }
 
@@ -4593,9 +4625,16 @@ function lowerDynReceiverMethodCall(
       ? lowerProtocolMethodCall(lowerer, call, access, recv)
       : null;
   if (protocolCall) return protocolCall;
-  const dispatched = callbackProperty
-    ? null
-    : lowerDynDispatchMethodCall(lowerer, call, access, recv, arrayReceiver);
+  // Open own methods can become getters. Read the callee before argument
+  // effects rather than deferring lookup to a class-dispatch fallback.
+  const openOwnMethod =
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    !DYN_PROTO_METHOD_NAMES.has(access.name.text) &&
+    readsOpenJsBinding(lowerer, access.expression);
+  const dispatched =
+    callbackProperty || openOwnMethod
+      ? null
+      : lowerDynDispatchMethodCall(lowerer, call, access, recv, arrayReceiver);
   if (dispatched) return dispatched;
   // Names NO dyn-representable prototype declares: the member can only
   // be an OWN property, so "read the member, call it" IS Node's
@@ -9592,11 +9631,9 @@ function lowerObjectStaticCall(
     let inner: ts.Expression = argNode;
     while (ts.isParenthesizedExpression(inner) || ts.isAsExpression(inner))
       inner = inner.expression;
-    const value =
-      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
-      (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner))
-        ? lowerer.lowerExprExpecting(argNode, DYN)
-        : lowerer.lowerExpr(argNode);
+    const value = isJsFreshLiteralFreeze(lowerer, call)
+      ? lowerer.lowerExprExpecting(argNode, DYN)
+      : lowerer.lowerExpr(argNode);
     if (value.type.kind === "dyn") {
       noteUntypedIntegrity(lowerer, argNode);
       return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
@@ -10638,7 +10675,9 @@ export function lowerRecordFieldCall(
   const target = lowerer.fieldTarget(access);
   const loc = locOf(call);
   const receiverLocal =
-    target && isJsSourceFile(ts.getSourceFileOfNode(call))
+    target &&
+    (isJsSourceFile(ts.getSourceFileOfNode(call)) ||
+      sourceAssertionShapes(lowerer).has(receiverType.shapeId))
       ? lowerer.declareHiddenLocal("%callReceiver", target.obj.type)
       : null;
   const init: IrStmt | null =
@@ -10775,7 +10814,35 @@ export function lowerRecordFieldCall(
       boxedResult = lowerer.coerceInto(call, boxedResult, resolved);
     return boxedResult;
   }
-  const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
+  const memberType = lowerer.typeOf(access);
+  const erasedVoid =
+    isGenericCallableMemberType(memberType, lowerer.checker) &&
+    lowerer.irTypeOf(call).kind === "void";
+  if (hasOptionalTupleSpreads(lowerer, call)) {
+    if (erasedVoid)
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "optional-tuple spreads into void-instantiated generic record calls",
+      );
+    const spread = lowerSpreadArgsCall(lowerer, call, callee, loc);
+    if (spread?.kind === "dynCall") {
+      let result: IrExpr = receiver ? { ...spread, receiver } : spread;
+      if (callee.type.ret.kind !== "void")
+        result = lowerer.coerceInto(call, result, callee.type.ret);
+      if (isGenericCallableMemberType(memberType, lowerer.checker)) {
+        const resolved = lowerer.irTypeOf(call);
+        if (resolved.kind !== "void") result = lowerer.coerceInto(call, result, resolved);
+      } else if (isOverloadedMemberAccess(lowerer, access)) {
+        const resolved = resolvedOverloadResultType(lowerer, call);
+        if (resolved.kind !== "void") result = lowerer.coerceInto(call, result, resolved);
+      }
+      return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
+    }
+  }
+  const args = erasedVoid
+    ? discardedGenericVoidArgs(lowerer, call, callee.type)
+    : completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
   let result: IrExpr = {
     kind: "callValue",
     callee,
@@ -10787,12 +10854,78 @@ export function lowerRecordFieldCall(
   // A generic member's field holds its erased instance, and an overloaded
   // member's field its erased function (the overloads joined): the result
   // converts to this call's instantiated or resolved return type.
-  const memberType = lowerer.typeOf(access);
-  if (isGenericCallableMemberType(memberType, lowerer.checker))
-    result = lowerer.coerceInto(call, result, lowerer.irTypeOf(call));
-  else if (isOverloadedMemberAccess(lowerer, access))
+  if (isGenericCallableMemberType(memberType, lowerer.checker)) {
+    const resolved = lowerer.irTypeOf(call);
+    // A void signature does not erase JavaScript's actual return value.
+    // Keep the erased result, as the rest-call lanes above already do.
+    if (resolved.kind !== "void") result = lowerer.coerceInto(call, result, resolved);
+  } else if (isOverloadedMemberAccess(lowerer, access))
     result = lowerer.coerceInto(call, result, resolvedOverloadResultType(lowerer, call));
   return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
+}
+
+function discardedCallResult(call: ts.CallExpression): boolean {
+  let use: ts.Node = call;
+  while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+  return ts.isExpressionStatement(use.parent);
+}
+
+/** Keep this admission local to calls whose result the program discards.
+ * Stored void values and already-erased void callbacks need their own ABI. */
+function discardedGenericVoidArgs(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  funcType: IrType & { kind: "func" },
+): IrExpr[] {
+  if (!discardedCallResult(call))
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      "observing a void-instantiated generic record call's result",
+    );
+  const overrides: { node: ts.Node; previous: IrType | undefined }[] = [];
+  try {
+    for (const argument of call.arguments.nodes) {
+      let node = argument;
+      while (ts.isParenthesizedExpression(node) || ts.isSatisfiesExpression(node))
+        node = node.expression;
+      const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(node));
+      const contextual =
+        ts.isArrowFunction(node) || ts.isFunctionExpression(node)
+          ? lowerer.checker.getContextualType(node)
+          : undefined;
+      const contextualSignatures = contextual
+        ? lowerer.checker.getCallSignatures(contextual)
+        : signatures;
+      if (
+        contextualSignatures.length !== 1 ||
+        !(
+          lowerer.checker.getReturnTypeOfSignature(contextualSignatures[0]!).flags &
+          ts.TypeFlags.Void
+        )
+      )
+        continue;
+      if (
+        !(ts.isArrowFunction(node) || ts.isFunctionExpression(node)) ||
+        node.type ||
+        node.asteriskToken ||
+        node.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+      )
+        lowerer.unsupported(
+          "SC1090",
+          argument,
+          "passing an existing void callback to an erased generic record call",
+        );
+      overrides.push({ node, previous: lowerer.contextualFunctionReturns.get(node) });
+      lowerer.contextualFunctionReturns.set(node, DYN);
+    }
+    return completeFuncValueArgs(lowerer, call, funcType, locOf(call));
+  } finally {
+    for (const { node, previous } of overrides) {
+      if (previous === undefined) lowerer.contextualFunctionReturns.delete(node);
+      else lowerer.contextualFunctionReturns.set(node, previous);
+    }
+  }
 }
 
 /** `o.m(args)` where `m` is an object-literal GENERIC method (own type

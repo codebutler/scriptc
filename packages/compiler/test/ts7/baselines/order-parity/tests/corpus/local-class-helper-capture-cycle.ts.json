@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/local-class-helper-capture-cycle.ts"
+ ],
+ "diags": []
+}

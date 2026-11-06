@@ -408,6 +408,91 @@ static void check_handle_transfer(void) {
   scr_collect_cycles();
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+static uint8_t *transferred_pointer;
+
+static void *receive_transferred(void *data) {
+  scr_context_enter(2);
+  scr_init();
+  scr_lib_init(0, NULL);
+  scr_js_buffers_arm();
+  assert(scr_array_buffers_held(false) == 0);
+  ScrDyn *root = scr_message_decode(data);
+  assert(root && !scr_exc_pending());
+  assert(!scr_message_decode(data) && scr_exc_pending());
+  scr_exc_clear();
+  ScrBytes *owner = scr_dyn_obj_get(root, "buffer", 6)->v.handle.ptr;
+  ScrBytes *view = scr_dyn_obj_get(root, "bytes", 5)->v.bytes;
+  assert(owner->data == transferred_pointer); /* allocation moved, no copy */
+  assert(view->backing == owner && view->data == transferred_pointer + 4);
+  assert(owner->len == 16 && view->len == 3 && view->elem == SCR_BYTES_U16);
+  assert(owner->data[9] == 91 && scr_array_buffers_held(false) == 16);
+  scr_dyn_release(root);
+  assert(scr_array_buffers_held(false) == 0);
+  scr_context_cleanup();
+  return NULL;
+}
+
+static void check_buffer_transfer(void) {
+  scr_js_buffers_arm();
+  double before = scr_array_buffers_held(false);
+  ScrBytes *owner = scr_bytes_new(SCR_BYTES_U8, 16);
+  ScrBytes *view = scr_bytes_buffer_view(owner, SCR_BYTES_U16, 4, true, 3);
+  owner->data[9] = 91;
+  transferred_pointer = owner->data;
+  ScrDyn *buffer = scr_array_buffer_from_bytes(owner);
+  ScrDyn *list = scr_dyn_new_arr();
+  scr_dyn_arr_push(list, scr_dyn_retain(buffer));
+  ScrDyn *root = scr_dyn_new_obj();
+  scr_dyn_obj_set(root, "buffer", 6, buffer);
+  scr_dyn_obj_set(root, "bytes", 5, scr_dyn_new_bytes(view));
+  ScrMessage *message = scr_message_encode_transfer(root, list);
+  assert(message && !scr_exc_pending() && !scr_message_readable(message));
+  assert(owner->len == 0 && view->len == 0);
+  assert(scr_js_buffer_ops->owner_detached(owner));
+  assert(scr_js_buffer_ops->view_invalid(view));
+  assert(scr_array_buffers_held(false) == before);
+  scr_dyn_release(root);
+  scr_dyn_release(list);
+  scr_bytes_release(view);
+  scr_bytes_release(owner);
+  /* Only neutral message storage remains when the recipient starts. */
+  pthread_t receiver;
+  assert(pthread_create(&receiver, NULL, receive_transferred, message) == 0);
+  assert(pthread_join(receiver, NULL) == 0);
+  scr_message_free(message);
+
+  /* Cancellation frees an allocation that was never adopted. ASan checks
+   * both the moved allocation and the sender's surviving detached view. */
+  owner = scr_bytes_new(SCR_BYTES_U8, 64);
+  view = scr_bytes_buffer_view(owner, SCR_BYTES_U8, 8, true, 16);
+  buffer = scr_array_buffer_from_bytes(owner);
+  list = scr_dyn_new_arr();
+  scr_dyn_arr_push(list, scr_dyn_retain(buffer));
+  message = scr_message_encode_transfer(buffer, list);
+  assert(message && view->len == 0 && scr_array_buffers_held(false) == before);
+  scr_message_free(message);
+  scr_dyn_release(buffer);
+  scr_dyn_release(list);
+  scr_bytes_release(view);
+  scr_bytes_release(owner);
+  assert(scr_array_buffers_held(false) == before);
+  owner = scr_bytes_new(SCR_BYTES_U8, 4);
+  owner->external = true;
+  buffer = scr_array_buffer_from_bytes(owner);
+  list = scr_dyn_new_arr();
+  scr_dyn_arr_push(list, scr_dyn_retain(buffer));
+  assert(!scr_message_encode_transfer(buffer, list) && scr_exc_pending());
+  scr_exc_clear();
+  assert(owner->len == 4 && !scr_js_buffer_ops->owner_detached(owner));
+  owner->external = false;
+  scr_dyn_release(buffer);
+  scr_dyn_release(list);
+  scr_bytes_release(owner);
+  assert(scr_array_buffers_held(false) == before);
+}
+#endif
+
 int main(void) {
   scr_init();
   scr_lib_init(0, NULL);
@@ -427,6 +512,10 @@ int main(void) {
   check_large();
   check_readers();
   check_handle_transfer();
+#ifdef SCR_JS_OBJECT_MODEL
+  check_buffer_transfer();
+  puts("ArrayBuffer allocations move across heaps and release on cancellation");
+#endif
   scr_context_cleanup();
   puts("message graphs preserve identity, sparse values, byte aliases and getter order");
   puts("native handles cross threads through their transfer hooks");

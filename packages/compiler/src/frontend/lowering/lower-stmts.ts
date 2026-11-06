@@ -1,3 +1,4 @@
+import { sourceAssertionShapes } from "./source-record-views.js";
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import {
@@ -1087,7 +1088,8 @@ const TDZ_KINDS = new Set<IrType["kind"]>([
  * declaration; a read before initialization throws ReferenceError. Model
  * exactly that: when a reference fails to resolve anywhere on the
  * function stack, look for its declaration LATER in an open statement
- * list — a const with an initializer, pointer-backed type — and
+ * list — an initialized lexical binding or an uninitialized JavaScript
+ * let, with a pointer-backed type — and
  * pre-declare it there as a TDZ box (varDecl init:null, boxed, tdz),
  * registered in the list's scope frame so resolution finds it and
  * threads captures normally. The source declaration later becomes the
@@ -1104,7 +1106,12 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     !ts.isIdentifier(decl.name)
   )
     return false;
-  if (!decl.initializer) return false;
+  const uninitializedJs =
+    decl.initializer === undefined &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    decl.type === undefined &&
+    !hasJsTypeAnnotation(decl);
+  if (!decl.initializer && !uninitializedJs) return false;
   const flags = ts.getCombinedNodeFlags(decl);
   if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Using) !== 0) return false;
   // `const E = EventEmitter` has no storage to box: uses resolve at
@@ -1132,7 +1139,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     if (idx < entry.index || entry.ctx === lowerer.ctx || entry.ctx.tdzPredeclared.has(symbol))
       return false;
     let type = lowerer.irTypeOf(decl.name);
+    if (uninitializedJs && type.kind === "dyn")
+      type = inferredEvolvingLetType(lowerer, decl) ?? type;
     if (
+      decl.initializer !== undefined &&
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       !hasJsTypeAnnotation(decl) &&
@@ -1200,6 +1210,29 @@ export function predeclareForwardClass(lowerer: Lowerer, symbol: ts.Symbol): boo
     };
     entry.ctx.locals.push(local);
     entry.frame.set(symbol, local);
+    entry.out.push({ kind: "varDecl", localId: local.id, init: null, loc: locOf(decl) });
+    entry.ctx.tdzPredeclared.set(symbol, local);
+    return true;
+  }
+  return false;
+}
+
+/** A class currently being initialized can reach a hoisted helper whose
+ * closure captures the class itself. Allocate its typed TDZ cell before
+ * that closure, then let the declaration initialize the same cell. */
+export function predeclareInitializingClassCapture(
+  lowerer: Lowerer,
+  symbol: ts.Symbol | undefined,
+  local: IrLocal,
+): boolean {
+  const decl = symbol?.valueDeclaration;
+  if (!symbol || !decl || !ts.isClassDeclaration(decl) || local.type.kind !== "classval")
+    return false;
+  for (let i = lowerer.activeStmtLists.length - 1; i >= 0; i--) {
+    const entry = lowerer.activeStmtLists[i]!;
+    if (entry.stmts[entry.index] !== decl || entry.frame.get(symbol) !== local) continue;
+    if (entry.ctx.tdzPredeclared.has(symbol)) return false;
+    local.tdz = true;
     entry.out.push({ kind: "varDecl", localId: local.id, init: null, loc: locOf(decl) });
     entry.ctx.tdzPredeclared.set(symbol, local);
     return true;
@@ -1908,7 +1941,7 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
     const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
     if (pre) {
-      const value = lowerer.coerceToExpected(lowerer.lowerClassExpression(stmt), DYN);
+      const value = lowerer.coerceToExpected(lowerer.lowerClassExpression(stmt), pre.type);
       lowerer.ctx.tdzPredeclared.delete(symbol!);
       return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(stmt) };
     }
@@ -1917,12 +1950,21 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // Static members of a function-local class run while the class value is
     // built and may read the class by name: the class value assigns the
     // binding before them.
-    if (info.localClass && (info.runtimeStatics || info.runtimePrototypeMembers))
+    const beforeStatics = info.localClass && (info.runtimeStatics || info.runtimePrototypeMembers);
+    const init = lowerer.lowerClassExpression(stmt, beforeStatics ? local : undefined);
+    // Lowering the class body may have reached a forward helper that
+    // captured this binding and allocated its cell before the helper.
+    if (symbol && lowerer.ctx.tdzPredeclared.get(symbol) === local) {
+      lowerer.ctx.tdzPredeclared.delete(symbol);
+      return beforeStatics
+        ? { kind: "exprStmt", expr: init, loc: locOf(stmt) }
+        : { kind: "assign", localId: local.id, value: init, initializes: true, loc: locOf(stmt) };
+    }
+    if (beforeStatics)
       return [
         { kind: "varDecl", localId: local.id, init: null, loc: locOf(stmt) },
-        { kind: "exprStmt", expr: lowerer.lowerClassExpression(stmt, local), loc: locOf(stmt) },
+        { kind: "exprStmt", expr: init, loc: locOf(stmt) },
       ];
-    const init = lowerer.lowerClassExpression(stmt);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(stmt) };
   }
   if (ts.isVariableStatement(stmt)) {
@@ -6628,8 +6670,20 @@ export function lowerVarDecl(
   // box stays pre-declared until the initializer lowers: a statement the
   // commit point lowers again (localized failure) initializes the same box.
   const pre = declSymbol ? lowerer.ctx.tdzPredeclared.get(declSymbol) : undefined;
-  if (pre && decl.initializer) {
-    const init = lowerer.lowerExprExpecting(decl.initializer, pre.type);
+  if (pre) {
+    // A JavaScript `let value;` initializes the already-captured TDZ box
+    // to undefined at the declaration, just as an explicit initializer.
+    const init = decl.initializer
+      ? lowerer.lowerExprExpecting(decl.initializer, pre.type)
+      : pre.type.kind === "dyn"
+        ? dynUndefinedExpr(locOf(decl))
+        : lowerer.unassignedSlotInit(pre.type, locOf(decl));
+    if (init === null)
+      lowerer.unsupported(
+        "SC1090",
+        decl,
+        "forward-captured declarations without a representable undefined value",
+      );
     lowerer.ctx.tdzPredeclared.delete(declSymbol!);
     return { kind: "assign", localId: pre.id, value: init, initializes: true, loc: locOf(decl) };
   }
@@ -6721,7 +6775,10 @@ export function lowerVarDecl(
                 : undefined,
             );
   } catch (e) {
-    if (e instanceof PoisonError) {
+    // A self-capturing initializer may already have declared its TDZ box.
+    // Keep that binding on retry: a replacement shadows the box that the
+    // declaration will initialize and leaves its closures reading no value.
+    if (e instanceof PoisonError && !(declSymbol && lowerer.ctx.tdzPredeclared.has(declSymbol))) {
       const salvaged = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
       if (salvaged && salvaged.kind !== "void") {
         lowerer.declareLocal(decl.name, decl.name.text, salvaged, isLet);
@@ -8315,6 +8372,8 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   ) {
     obj = lowerer.coerceToExpected(obj, DYN);
   }
+  if (obj.type.kind === "record" && sourceAssertionShapes(lowerer).has(obj.type.shapeId))
+    obj = { kind: "dynFrom", value: obj, liveRef: true, type: DYN, loc };
   if (obj.type.kind === "dyn") {
     const strict = { kind: "boolLit", value: isStrictCode(expr), type: BOOL, loc } as const;
     if (ts.isElementAccessExpression(target)) {

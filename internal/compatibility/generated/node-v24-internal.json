@@ -2696,6 +2696,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/runtime/src/scr_blob_weak.test.ts",
           "tests/corpus/1402-buffer-encodings.ts",
           "tests/corpus/1660-buffer-read-write-num.ts",
           "tests/corpus/2902-bigint-bytes.ts",
@@ -2708,8 +2709,11 @@
           "tests/corpus/5530-buffer-pool.ts",
           "tests/corpus/5531-buffer-pool-first-slab.ts",
           "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs",
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/node24-buffer-encoding-errors.ts",
           "tests/corpus/node24-buffer-encoding.ts",
+          "tests/corpus/weak-blob-file-identity.ts",
           "tests/fixtures/node-types/blob-file.ts",
           "tests/fixtures/node-types/text-encoding.ts"
         ]
@@ -3247,6 +3251,10 @@
         "status": "partial",
         "evidence": "compiler-feature:buffer.Blob",
         "tests": [
+          "tests/corpus/weak-blob-file-identity.ts",
+          "packages/runtime/src/scr_blob_weak.test.ts",
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5288-blob-validation.js",
           "tests/fixtures/node-types/blob-file.ts"
@@ -3298,6 +3306,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.blob.arrayBuffer",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -3329,6 +3339,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.blob.bytes",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -3360,6 +3372,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.blob.slice",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -3414,6 +3428,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.blob.text",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -3468,6 +3484,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.blob.size",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -3499,6 +3517,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.type",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -5154,6 +5174,10 @@
         "status": "partial",
         "evidence": "compiler-feature:buffer.File",
         "tests": [
+          "tests/corpus/weak-blob-file-identity.ts",
+          "packages/runtime/src/scr_blob_weak.test.ts",
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5288-blob-validation.js",
           "tests/fixtures/node-types/blob-file.ts"
@@ -5182,6 +5206,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.name",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -5213,6 +5239,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.lastModified",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -52468,6 +52496,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/runtime/src/scr_blob_weak.test.ts",
           "tests/corpus/1423-text-codec.ts",
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
@@ -52489,7 +52518,10 @@
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/text-codec-values/main.ts",
+          "tests/corpus/weak-blob-file-identity.ts",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
           "tests/corpus/webassembly-jsapi.mjs",
@@ -52737,6 +52769,10 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.Blob",
         "tests": [
+          "tests/corpus/weak-blob-file-identity.ts",
+          "packages/runtime/src/scr_blob_weak.test.ts",
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5287-blob-inspect.ts",
@@ -53096,6 +53132,10 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.File",
         "tests": [
+          "tests/corpus/weak-blob-file-identity.ts",
+          "packages/runtime/src/scr_blob_weak.test.ts",
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5287-blob-inspect.ts",
@@ -76085,6 +76125,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/runtime/src/scr_perf_origin.test.ts",
           "tests/corpus/2427-perf-hooks-now.ts",
           "tests/corpus/2446-performance-global.ts",
           "tests/corpus/2500-net-autosel-timeout.ts",
@@ -76100,6 +76141,8 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
+          "tests/corpus/performance-time-origin-worker/main.ts",
+          "tests/corpus/performance-time-origin.ts",
           "tests/fixtures/node-types/event-loop-metrics.ts"
         ]
       },
@@ -79643,8 +79686,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.timeOrigin",
+        "tests": [
+          "tests/corpus/performance-time-origin.ts",
+          "tests/corpus/performance-time-origin-worker/main.ts",
+          "packages/runtime/src/scr_perf_origin.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114597,6 +114645,7 @@
           "tests/corpus/5879-worker-stdin.ts",
           "tests/corpus/5990-worker-uncloneable.mjs",
           "tests/corpus/5991-worker-async-dispose.mjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs",
           "tests/corpus/native-worker-clone-errors.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-delayed-messages.ts",
@@ -114612,7 +114661,11 @@
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-terminate-loop.ts",
           "tests/corpus/native-worker-terminate-suspended.ts",
-          "tests/corpus/native-worker-terminate-wait.ts"
+          "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/corpus/worker-arraybuffer-transfer-computed.cjs",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts",
+          "tests/corpus/worker-arraybuffer-transfer-dynamic-import.mjs",
+          "tests/corpus/worker-arraybuffer-transfer.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -114901,7 +114954,8 @@
           "tests/corpus/5793-worker-message-channel.ts",
           "tests/corpus/5796-worker-message-channel.cjs",
           "tests/corpus/5797-worker-message-port-transfer.ts",
-          "tests/corpus/5805-worker-receive-message-parent-port.ts"
+          "tests/corpus/5805-worker-receive-message-parent-port.ts",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -114929,7 +114983,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "exact"
@@ -114984,7 +115039,11 @@
           "tests/corpus/native-worker-message-graphs.ts",
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-clone-errors.ts",
-          "tests/corpus/native-worker-delayed-messages.ts"
+          "tests/corpus/native-worker-delayed-messages.ts",
+          "tests/corpus/worker-arraybuffer-transfer.ts",
+          "tests/corpus/worker-arraybuffer-transfer-computed.cjs",
+          "tests/corpus/worker-arraybuffer-transfer-dynamic-import.mjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115161,7 +115220,8 @@
         "evidence": "compiler-feature:worker_threads.'close'",
         "tests": [
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-messages.ts"
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115188,7 +115248,8 @@
         "evidence": "compiler-feature:worker_threads.'message'",
         "tests": [
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-messages.ts"
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115211,8 +115272,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.'messageerror'",
+        "tests": [
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115240,7 +115306,9 @@
           "tests/corpus/native-worker-messages.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-environment.ts",
-          "tests/corpus/native-worker-roots/main.ts"
+          "tests/corpus/native-worker-roots/main.ts",
+          "tests/corpus/worker-arraybuffer-transfer.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115338,7 +115406,11 @@
           "tests/corpus/native-worker-message-graphs.ts",
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-clone-errors.ts",
-          "tests/corpus/native-worker-delayed-messages.ts"
+          "tests/corpus/native-worker-delayed-messages.ts",
+          "tests/corpus/worker-arraybuffer-transfer.ts",
+          "tests/corpus/worker-arraybuffer-transfer-computed.cjs",
+          "tests/corpus/worker-arraybuffer-transfer-dynamic-import.mjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115675,7 +115747,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115702,7 +115775,8 @@
         "evidence": "compiler-feature:worker_threads.threadName",
         "tests": [
           "tests/corpus/5870-worker-thread-names.ts",
-          "tests/corpus/5871-worker-untransferable.cjs"
+          "tests/corpus/5871-worker-untransferable.cjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -115899,7 +115973,8 @@
         "evidence": "compiler-feature:worker_threads.worker_threads.markAsUntransferable",
         "tests": [
           "tests/corpus/5870-worker-thread-names.ts",
-          "tests/corpus/5871-worker-untransferable.cjs"
+          "tests/corpus/5871-worker-untransferable.cjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115926,7 +116001,8 @@
         "evidence": "compiler-feature:worker_threads.worker_threads.isMarkedAsUntransferable",
         "tests": [
           "tests/corpus/5870-worker-thread-names.ts",
-          "tests/corpus/5871-worker-untransferable.cjs"
+          "tests/corpus/5871-worker-untransferable.cjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -116027,7 +116103,8 @@
           "tests/corpus/5793-worker-message-channel.ts",
           "tests/corpus/5796-worker-message-channel.cjs",
           "tests/corpus/5797-worker-message-port-transfer.ts",
-          "tests/corpus/5805-worker-receive-message-parent-port.ts"
+          "tests/corpus/5805-worker-receive-message-parent-port.ts",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -116108,7 +116185,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -116136,7 +116214,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -116213,7 +116292,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -116240,7 +116320,8 @@
         "evidence": "compiler-feature:worker_threads.threadName",
         "tests": [
           "tests/corpus/5870-worker-thread-names.ts",
-          "tests/corpus/5871-worker-untransferable.cjs"
+          "tests/corpus/5871-worker-untransferable.cjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -116268,7 +116349,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "exact"

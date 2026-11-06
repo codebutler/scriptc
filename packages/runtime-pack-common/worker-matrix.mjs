@@ -24,7 +24,18 @@ export function withWorkerRuntimeVariants(matrix) {
       ...sources.map((source) => ({
         source,
         predicate: "workers",
-        variants: [{ id: "workers", when: { workers: true }, defines: ["SCR_WORKERS"] }],
+        variants: [
+          { id: "workers", when: { workers: true }, defines: ["SCR_WORKERS"] },
+          ...(source === "scr_message.c"
+            ? [
+                {
+                  id: "js-om-workers",
+                  when: { workers: true, jsObjectModel: true },
+                  defines: ["SCR_WORKERS", "SCR_JS_OBJECT_MODEL"],
+                },
+              ]
+            : []),
+        ],
       })),
     ],
   };

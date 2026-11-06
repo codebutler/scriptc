@@ -4,6 +4,7 @@ import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
   DYN,
+  RUNTIME_ERROR_CLASSES,
   STRING,
   SYMBOL_T,
   VOID,
@@ -38,6 +39,8 @@ export function classPrototypeData(
   receiver?: IrExpr,
   metadataOnly = false,
 ): IrExpr | null {
+  const errorFamily = standardErrorFamilyName(info.def.name);
+  if (errorFamily !== null) return errorPrototypeValue(errorFamily, loc);
   if (info.localClass) {
     if (!receiver) return null;
     info.localPrototypeData = true;
@@ -72,7 +75,8 @@ export function classPrototypeData(
             type: DYN,
             loc,
           }
-      : info.base && !info.base.builtinError
+      : info.base &&
+          (!info.base.builtinError || standardErrorFamilyName(info.base.def.name) !== null)
         ? classPrototypeData(lowerer, info.base, loc, {
             kind: "dynCheck",
             value: {
@@ -107,7 +111,8 @@ export function classPrototypeData(
   if (info.def.prototypeDataHelper === undefined) {
     const base = info.callableBase
       ? varRef(info.callableBase.prototypeId, DYN, loc)
-      : info.base && !info.base.builtinError
+      : info.base &&
+          (!info.base.builtinError || standardErrorFamilyName(info.base.def.name) !== null)
         ? classPrototypeData(
             lowerer,
             info.base,
@@ -122,7 +127,12 @@ export function classPrototypeData(
             metadataOnly,
           )
         : null;
-    if (info.base && !info.base.builtinError && base === null) return null;
+    if (
+      info.base &&
+      (!info.base.builtinError || standardErrorFamilyName(info.base.def.name) !== null) &&
+      base === null
+    )
+      return null;
     const name = `%prototype.data.${info.def.name}`;
     const globalId = `%g.${name}`;
     const readyId = `${globalId}.ready`;
@@ -330,6 +340,14 @@ export function reflectClassPrototype(
   receiver: IrExpr,
 ): IrExpr | null {
   const prototype = classPrototypeData(lowerer, info, loc, receiver);
+  if (prototype) {
+    for (let current: ClassInfo | null = info; current; current = current.base) {
+      if (standardErrorFamilyName(current.def.name) !== null) {
+        lowerer.errorPrototypeValues = true;
+        break;
+      }
+    }
+  }
   if (!prototype || !info.decl) return prototype;
   const refuse = (message: string): IrExpr => {
     const name = `%prototype.refusal:${info.def.name}`;
@@ -512,26 +530,44 @@ export function isCompiledPrototypeMember(
   );
 }
 
-/** `Error.prototype` read as the checked-dynamic object, as a value or for
- * a member other than `toString` and `constructor`, which keep the Error
- * class's prototype data (`this.toString !== Error.prototype.toString`
- * compares class method values). */
+/** The ECMAScript Error families. DOMException and AssertionError retain
+ * their separate host-class reflection boundaries. */
+export function standardErrorFamilyName(className: string): string | null {
+  if (className === "%DOMException" || className === "%AssertionError") return null;
+  return RUNTIME_ERROR_CLASSES.get(className)?.lib ?? null;
+}
+
+export function errorPrototypeName(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): string | null {
+  if (expr.name.text !== "prototype") return null;
+  for (const [className, record] of RUNTIME_ERROR_CLASSES) {
+    if (
+      standardErrorFamilyName(className) !== null &&
+      lowerer.isStdlibGlobal(expr.expression, record.lib)
+    )
+      return record.lib;
+  }
+  return null;
+}
+
+export function errorPrototypeValue(name: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.stdlibPrototype",
+    args: [{ kind: "strLit", value: name, type: STRING, loc }],
+    type: DYN,
+    loc,
+  };
+}
+
+/** Prototype values and their members share the canonical runtime object. */
 export function isErrorPrototypeValue(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
 ): boolean {
-  let node: ts.Node = expr;
-  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
-  const parent = node.parent;
-  return (
-    expr.name.text === "prototype" &&
-    lowerer.isStdlibGlobal(expr.expression, "Error") &&
-    !(
-      ts.isPropertyAccessExpression(parent) &&
-      parent.expression === node &&
-      (parent.name.text === "toString" || parent.name.text === "constructor")
-    )
-  );
+  return errorPrototypeName(lowerer, expr) !== null;
 }
 
 /** Whether a bare `C.prototype` read becomes the prototype of another object
@@ -612,8 +648,8 @@ export function lowerClassPrototypeData(
   // Error.prototype as a value: the checked-dynamic object an ES5
   // constructor function inherits from (`F.prototype =
   // Object.create(Error.prototype)`).
-  if (isErrorPrototypeValue(lowerer, expr))
-    return { kind: "libCall", fn: "dyn.errorPrototype", args: [], type: DYN, loc: locOf(expr) };
+  const errorFamily = errorPrototypeName(lowerer, expr);
+  if (errorFamily !== null) return errorPrototypeValue(errorFamily, locOf(expr));
   // EventEmitter.prototype and the stream prototypes: the untyped
   // constructor's prototype object (builtin-class-dyn.ts).
   const builtinKind = builtinClassKind(info.def.name);

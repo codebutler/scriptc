@@ -4672,8 +4672,26 @@ export class ClassDynamicDispatch {
     receiver: IrExpr,
     loc: SrcLoc,
   ): IrExpr {
-    const cls = lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl!), DYN);
-    const prototype = hasClassPrototypeData(info) ? classPrototypeData(lowerer, info, loc) : null;
+    const localReceiver = info.localClass
+      ? lowerer.coerceToExpected(receiver, { kind: "object", className: info.def.name })
+      : undefined;
+    const cls = lowerer.coerceToExpected(
+      localReceiver
+        ? {
+            kind: "fieldGet",
+            obj: localReceiver,
+            className: info.def.name,
+            field: `%classEnvironment:${info.def.name}`,
+            type: { kind: "classval", className: info.def.name },
+            loc,
+          }
+        : classValueRef(lowerer, info, info.decl!),
+      DYN,
+    );
+    const prototype =
+      localReceiver || hasClassPrototypeData(info)
+        ? classPrototypeData(lowerer, info, loc, localReceiver)
+        : null;
     if (!prototype) return cls;
     const base = info.base;
     const read = (): IrExpr => ({
@@ -4685,9 +4703,21 @@ export class ClassDynamicDispatch {
     });
     // Past the last class prototype, the read continues to Object.prototype's data property.
     const next: IrExpr =
-      base && !base.builtinError && base.decl && !base.generic && !base.localClass
+      base && !base.builtinError && base.decl && !base.generic
         ? this.inheritedConstructor(lowerer, base, key, receiver, loc)
         : { kind: "dynKeyGet", value: prototype, key, type: DYN, loc };
+    // Local class values already own a prototype with their constructor.
+    // Its identity belongs to this instance's captured class environment;
+    // an absent constructor therefore means the program deleted it.
+    if (localReceiver)
+      return {
+        kind: "ternary",
+        cond: { kind: "libCall", fn: "dyn.hasOwn", args: [prototype, key], type: BOOL, loc },
+        then: read(),
+        else_: next,
+        type: DYN,
+        loc,
+      };
     return {
       kind: "ternary",
       cond: { kind: "libCall", fn: "dyn.hasOwn", args: [prototype, key], type: BOOL, loc },
@@ -6511,10 +6541,9 @@ export class ClassDynamicDispatch {
         !accessor &&
         info.decl &&
         !info.generic &&
-        !info.localClass &&
         !info.classDecorators
       ) {
-        this.constructors.set(info.def.name, info);
+        if (!info.localClass) this.constructors.set(info.def.name, info);
         const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
         // `constructor` is an own property of every class prototype, so an

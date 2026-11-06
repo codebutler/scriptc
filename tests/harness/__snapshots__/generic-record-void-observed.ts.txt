@@ -1,0 +1,6 @@
+generic-record-void-observed.ts:5:15 - error SC1090: observing a void-instantiated generic record call's result is not supported yet
+
+  4 | const store = create("record");
+  5 | const value = store.call<void>(() => 42);
+    |               ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  6 | console.log(value);

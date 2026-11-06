@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-error-constructor-alias-method.mjs"
+ ],
+ "diags": []
+}

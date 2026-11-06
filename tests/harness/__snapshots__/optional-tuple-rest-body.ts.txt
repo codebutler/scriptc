@@ -1,0 +1,6 @@
+optional-tuple-rest-body.ts:2:21 - error SC2001: values of type '[number, (string | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+  1 | // The flattened fixed-arity rest ABI does not expose the original argument count.
+  2 | function capture(...args: [number, string?]): [number, string?] {
+    |                     ^~~~
+  3 |   return args;

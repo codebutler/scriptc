@@ -1807,6 +1807,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc);
 ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrStr *what);
 ScrDyn *scr_dyn_object_prototype(void);
 ScrDyn *scr_dyn_error_prototype(void);
+ScrDyn *scr_dyn_error_family_prototype(const ScrStr *name);
 bool scr_dyn_inherits_error_prototype(const ScrDyn *value);
 ScrDyn *scr_dyn_error_capture_stack_trace_function(void);
 ScrDyn *scr_dyn_function_apply(void);
@@ -1819,6 +1820,18 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
  * `prototype` is the same object). Named by the constructor whose interface
  * it carries; dyn.stdlibPrototype's implementation. */
 ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name);
+
+/* Optional native prototype reflection, installed only by a gated unit.
+ * NULL answers mean the name/value belongs to another implementation. */
+typedef struct ScrDynNativePrototypeHooks {
+  ScrDyn *(*named)(const ScrStr *name);
+  ScrDyn *(*of)(const ScrDyn *value);
+  bool (*invoke)(const ScrStr *owner, const ScrStr *method, ScrDyn *receiver, ScrDyn **result);
+  bool (*fence)(const ScrDyn *value, const char *operation);
+  bool (*read_fence)(const ScrDyn *value, const char *key, size_t length);
+} ScrDynNativePrototypeHooks;
+extern const ScrDynNativePrototypeHooks *scr_dyn_native_prototype_hooks;
+
 ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, const ScrStr *what);
 ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what);
 ScrStr *scr_dyn_error_string(const ScrDyn *d);
@@ -2092,6 +2105,19 @@ typedef struct ScrDynPath {
   const char *key;
   size_t index;
 } ScrDynPath;
+void *scr_dyn_source_record_view(ScrDyn *source, void *(*alloc)(void), const ScrDynPath *path);
+ScrDyn *scr_dyn_source_record_read(ScrDyn *source, const char *name, size_t name_len,
+                                   const ScrDynPath *path);
+ScrDyn *scr_record_source_view_source(void *view); /* borrowed, or NULL */
+bool scr_record_source_view_trace(void *view, void (*visit)(void *, void *), void *ctx);
+void scr_record_source_view_gc_clear(void *view);
+void scr_record_source_view_refuse_clone(void *view);
+void *scr_record_source_view_identity(void *view);
+void scr_dyn_build_hold(void *value, void *(*retain)(void *), void (*release)(void *));
+ScrDyn *scr_record_source_view_read(void *view, const char *name, size_t name_len);
+bool scr_record_source_view_has(void *view, const char *name, size_t name_len);
+void scr_record_source_view_set(void *view, const char *name, size_t name_len, ScrDyn *value);
+
 ScrSearchParams *scr_dyn_native_search_params_check(const ScrDyn *value, const ScrDynPath *path);
 ScrSearchParams *scr_sp_new_checked(const ScrDyn *value);
 ScrMap *scr_dyn_native_set_check(const ScrDyn *value, const ScrDynPath *path);

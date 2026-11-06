@@ -29,7 +29,19 @@ import { type ParamShape } from "./call-signatures.js";
 import { arrayValueRead, arrayValueType } from "./array-values.js";
 import { buildArrayConversion } from "./coercions/builders.js";
 import { lowerArraySpreadItems, lowerArrayValueItems } from "./containers/array-construction.js";
-import { restTupleElementTypes, typeKey } from "../type-mapper.js";
+import { optionalTupleType, restTupleElementTypes, typeKey } from "../type-mapper.js";
+
+export function hasOptionalTupleSpreads(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  const spreads = call.arguments.nodes.filter(ts.isSpreadElement);
+  return (
+    spreads.length > 0 &&
+    spreads.every(
+      (arg) =>
+        optionalTupleType(lowerer.typeOf(arg.expression), lowerer.typeCtx) &&
+        lowerer.mapTypeOf(lowerer.typeOf(arg.expression))?.kind === "dyn",
+    )
+  );
+}
 
 function fixedTupleSpreadInfo(
   lowerer: Lowerer,
@@ -714,12 +726,13 @@ export function lowerSpreadArgsCall(
   callee: IrExpr,
   loc: SrcLoc,
 ): IrExpr | null {
-  // TypeScript reaches this lane for checked-dynamic variadic callees
-  // (`(...args: unknown[]) => R`) and for checked-dynamic method values
-  // (a dyn array's `push`/`concat`), each of whose ABI is the JS one.
+  // Checked variadic callees, dynamic methods, and bounded optional-tuple
+  // spreads need JavaScript's runtime argument count. Typed functions use
+  // their checked boxing thunk; other TypeScript spread shapes stay fenced.
   if (
     !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     callee.type.kind !== "dyn" &&
+    !hasOptionalTupleSpreads(lowerer, expr) &&
     !(callee.type.kind === "func" && callee.type.rest === true && callee.type.restAbi === undefined)
   )
     return null;

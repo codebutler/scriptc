@@ -1,6 +1,7 @@
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
+  DYN,
   VOID,
   shapeHasAccessorSlots,
   typeKey,
@@ -14,7 +15,9 @@ import { numLit, strLit, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
 import { recordHasOwnHelper } from "./lower-calls.js";
+import { isJsSourceFile } from "../program.js";
 import { isStrictCode } from "./strict-mode.js";
+import { sourceAssertionShapes } from "./source-record-views.js";
 
 /* Object.freeze of records and arrays that other references can still
  * write. Only the types a program may freeze pay for it. A record keeps its
@@ -27,6 +30,25 @@ import { isStrictCode } from "./strict-mode.js";
  * freezes, seals or prevents extensions of untyped values
  * (noteUntypedIntegrity), when a value of it or of a type reaching it can be
  * held as a live untyped reference. */
+
+/** A fresh JavaScript literal frozen by the builtin retains checked object
+ * identity. Collection and call lowering must choose the same storage before
+ * deferred initializers or readers are lowered. */
+export function isJsFreshLiteralFreeze(lowerer: Lowerer, expression: ts.Expression): boolean {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expression))) return false;
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (
+    !ts.isCallExpression(expression) ||
+    expression.questionDotToken ||
+    !ts.isPropertyAccessExpression(expression.expression) ||
+    lowerer.stdlibGlobalMember(expression.expression, "Object") !== "freeze" ||
+    expression.arguments.nodes.length !== 1
+  )
+    return false;
+  let value = expression.arguments.nodes[0]!;
+  while (ts.isParenthesizedExpression(value) || ts.isAsExpression(value)) value = value.expression;
+  return ts.isObjectLiteralExpression(value) || ts.isArrayLiteralExpression(value);
+}
 
 type RecordType = Extract<IrType, { kind: "record" }>;
 type RecordWrite = Extract<IrStmt, { kind: "recordSet" | "recordKeySet" | "recordKeyDelete" }>;
@@ -44,13 +66,27 @@ export function lowerNativeFreeze(
   const type = target.type;
   const slot = lowerer.declareHiddenLocal("%freezeTarget", type);
   const receiver = (): IrExpr => varRef(slot.id, type, loc);
+  // A structural API view freezes its retained source. Boxing also keeps
+  // the existing native freeze path for ordinary records of the same type.
+  const sourceView =
+    fn === "record.freeze" &&
+    type.kind === "record" &&
+    sourceAssertionShapes(lowerer).has(type.shapeId);
   return {
     kind: "seqExpr",
     stmts: [
       { kind: "varDecl", localId: slot.id, init: target, loc },
       {
         kind: "exprStmt",
-        expr: { kind: "libCall", fn, args: [receiver()], type: VOID, loc },
+        expr: sourceView
+          ? {
+              kind: "libCall",
+              fn: "dyn.freeze",
+              args: [lowerer.coerceToExpected(receiver(), DYN)],
+              type: DYN,
+              loc,
+            }
+          : { kind: "libCall", fn, args: [receiver()], type: VOID, loc },
         loc,
       },
     ],

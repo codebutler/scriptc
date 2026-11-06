@@ -1,3 +1,4 @@
+import { sourceAssertionShapes } from "./source-record-views.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -232,7 +233,7 @@ import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
-import { installMutableBuffersArm } from "./buffers.js";
+import { hasWorkerBufferTransfers, installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
@@ -722,6 +723,7 @@ import {
   isBlockedBinding,
   lowerScopedBlock,
   predeclareForwardCapture,
+  predeclareInitializingClassCapture,
   predeclareForwardFnDecl,
   predeclareForwardVar,
   lowerStmt,
@@ -5450,6 +5452,7 @@ export class Lowerer {
       ? (sym, answer) => this.verifySymbolProvenanceAnswer(sym, answer)
       : undefined;
     this.checker = program.getTypeChecker();
+    this.buffersMutable = hasWorkerBufferTransfers(program, moduleOrder);
     const islands = this.nodeIslands;
     const shadow = canonShadowHook(this.checker);
     this.typeCtx = {
@@ -9995,6 +9998,14 @@ export class Lowerer {
         const flowClass = recordFlows.bindingClass(symbol);
         const fields = settledFields(flowClass, optionalFields.get(symbol));
         if (!dynamicObjectEntryRows.has(symbol) && !optionalSymbols.has(symbol) && !fields) return;
+        // Checked globals already represent undefined and changing object
+        // shapes. Keep that storage when optional-flow facts widen the
+        // checker's static view; deferred initializers and readers must
+        // agree with the representation collection selected.
+        if (this.globalsBySymbol.get(symbol)?.type.kind === "dyn") {
+          this.runtimeOptionalBindingTypes.set(symbol, DYN);
+          return;
+        }
         const current = this.mapTypeOf(this.typeOf(node.name));
         if (!current) return;
         let promoted = dynamicObjectEntryRows.has(symbol) ? DYN : current;
@@ -11974,7 +11985,8 @@ export class Lowerer {
    * mapped with each failing component as the checked dynamic, so a record
    * keeps its static members, an array of records its records, and a
    * function its arity. The whole slot is the checked dynamic when even
-   * that shape does not map. Throwaway context: nothing memoizes. */
+   * that shape does not map. The throwaway context has no persistent memo;
+   * its once collector records each failed type at its first occurrence. */
   lenientType(type: ts.Type): IrType {
     const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
     const owner = this.checker.typeToString(type);
@@ -11982,7 +11994,7 @@ export class Lowerer {
       ...strict,
       lenient: true,
       canMemoizeType: () => false,
-      onLenientPiece: (piece) => {
+      onLenientPieceOnce: (piece) => {
         const id = (piece as { id?: number }).id;
         if (id !== undefined && !this.lenientPieces.has(id)) this.lenientPieces.set(id, owner);
       },
@@ -15268,7 +15280,10 @@ export class Lowerer {
   recordFieldPresent(obj: IrExpr, shapeId: string, field: string, loc: SrcLoc): IrExpr {
     // A partial record view (partial-assertions.ts) can lack a field its
     // asserted literal never wrote, whatever the field's required type.
-    if (partialAssertionFields(this, shapeId).has(field))
+    if (
+      sourceAssertionShapes(this).has(shapeId) ||
+      partialAssertionFields(this, shapeId).has(field)
+    )
       return { kind: "recordHas", obj, shapeId, field, type: BOOL, loc };
     const f = this.shapes.get(shapeId)?.fields.find((x) => x.name === field);
     if (f && f.type.kind === "union" && this.armTag(f.type.unionId, UNDEFINED_T) >= 0) {
@@ -16662,6 +16677,7 @@ export class Lowerer {
 
   resolveKey(symbol: ts.Symbol | undefined, blame?: ts.Node): IrLocal | null {
     const resolved = captureContextBinding(this.fnStack, symbol, (parentEntry, entry) => {
+      if (predeclareInitializingClassCapture(this, symbol, parentEntry)) entry.tdz = true;
       const root = this.runtimeOptionalRootOf(parentEntry);
       if (this.runtimeOptionalStorageLocals.has(root)) this.runtimeOptionalRoots.set(entry, root);
     });

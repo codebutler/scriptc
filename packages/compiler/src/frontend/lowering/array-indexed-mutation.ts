@@ -47,7 +47,7 @@ const lengthOf = (arr: IrExpr, loc: SrcLoc): IrExpr => ({
   loc,
 });
 
-function relativeIndex(position: IrExpr, length: IrExpr, loc: SrcLoc): IrExpr {
+export function relativeIndex(position: IrExpr, length: IrExpr, loc: SrcLoc): IrExpr {
   const integer: IrExpr = {
     kind: "ternary",
     cond: { kind: "libCall", fn: "num.isNaN", args: [position], type: BOOL, loc },

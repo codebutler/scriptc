@@ -10,6 +10,7 @@ import {
   typeEquals,
   typeKey,
 } from "../../ir/ir.js";
+import { isSourceRecordView } from "../../ir/source-record-views.js";
 import { DYN_KIND } from "./dyn.js";
 import { stringParts } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
@@ -408,7 +409,7 @@ export function emitSerializationExpr(
         return host.own({ name: retained, type: e.type });
       }
       const dynV = emitBorrowedInput(host, e.value);
-      const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs);
+      const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs, isSourceRecordView(e));
       // A check of an analysis-proven fact (shape inference's overlay)
       // names its site, so a failure reports a compiler bug.
       const site = e.inferredSite !== undefined ? host.cstr(e.inferredSite) : null;

@@ -24,6 +24,16 @@ function selected(
   return matches[0];
 }
 
+test("worker buffer transfers select the optional object-model message build", () => {
+  expect(selected("scr_message.c", { workers: true, jsObjectModel: false }).defines).toEqual([
+    "SCR_WORKERS",
+  ]);
+  expect(selected("scr_message.c", { workers: true, jsObjectModel: true }).defines).toEqual([
+    "SCR_WORKERS",
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+});
+
 test("the typed stdio write slot selects the events build that carries it", () => {
   const plain = { stdioExtended: false, nodeIsland: false, workers: false };
   // Alone, the write slot selects its own build.
@@ -73,12 +83,28 @@ test("web streams and Node islands select an async build that defines both", () 
   ).toEqual([]);
 });
 
-test("scr_lib.c builds once per flavor, whatever the program's features", () => {
+test("scr_lib.c selects the epoch anchor only for performance.timeOrigin", () => {
   // A file read brands its bytes and fs.watchFile's stat entry points are
   // always defined, so neither a read nor a poll selects a second build.
   const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_lib.c");
-  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual(["default", "default-workers"]);
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
+    "default",
+    "default-workers",
+    "perf-origin",
+    "perf-origin-workers",
+  ]);
   const plain = { workers: false, watchFile: false };
+  for (const workers of [false, true]) {
+    const defines = workers ? ["SCR_WORKERS"] : [];
+    expect(selected("scr_lib.c", { ...plain, workers }).defines).toEqual(defines);
+    expect(selected("scr_lib.c", { ...plain, workers, perfOrigin: false }).defines).toEqual(
+      defines,
+    );
+    expect(selected("scr_lib.c", { ...plain, workers, perfOrigin: true }).defines).toEqual([
+      "SCR_PERF_ORIGIN",
+      ...defines,
+    ]);
+  }
   expect(selected("scr_lib.c", plain).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, workers: true, watchFile: true }).defines).toEqual([
