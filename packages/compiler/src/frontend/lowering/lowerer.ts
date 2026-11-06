@@ -9995,6 +9995,14 @@ export class Lowerer {
         const flowClass = recordFlows.bindingClass(symbol);
         const fields = settledFields(flowClass, optionalFields.get(symbol));
         if (!dynamicObjectEntryRows.has(symbol) && !optionalSymbols.has(symbol) && !fields) return;
+        // Checked globals already represent undefined and changing object
+        // shapes. Keep that storage when optional-flow facts widen the
+        // checker's static view; deferred initializers and readers must
+        // agree with the representation collection selected.
+        if (this.globalsBySymbol.get(symbol)?.type.kind === "dyn") {
+          this.runtimeOptionalBindingTypes.set(symbol, DYN);
+          return;
+        }
         const current = this.mapTypeOf(this.typeOf(node.name));
         if (!current) return;
         let promoted = dynamicObjectEntryRows.has(symbol) ? DYN : current;
