@@ -338,6 +338,178 @@ describe("mapCanonical", () => {
     ).toBe("record");
     expect(tight.collapsedToDynamic).toBe(false);
   });
+  test("shared canonical subgraphs map once per depth", () => {
+    let reads = 0;
+    let node: Canon = { k: "prim", p: "number" };
+    for (let i = 0; i < 10; i++) {
+      const child = node;
+      node = {
+        k: "obj",
+        typeArgs: () => [],
+        props: () => {
+          reads++;
+          return ["left", "right"].map((name) => ({
+            name,
+            optional: false,
+            readonly: true,
+            accessor: false,
+            type: () => child,
+          }));
+        },
+        index: () => [],
+        call: () => [],
+        construct: () => [],
+      };
+    }
+    expect(mapCanonical(node, ctx())?.kind).toBe("record");
+    expect(reads).toBe(10);
+  });
+
+  test("a failed deep occurrence does not poison a shallower occurrence", () => {
+    const number: Canon = { k: "prim", p: "number" };
+    const record = (child: Canon, fallback = false): Canon => ({
+      k: "obj",
+      ...(fallback ? { src: valueTypes.get("sampleNumber")! } : {}),
+      typeArgs: () => [],
+      props: () => [
+        { name: "value", optional: false, readonly: true, accessor: false, type: () => child },
+      ],
+      index: () => [],
+      call: () => [],
+      construct: () => [],
+    });
+    const shared = record(number);
+    let deep = shared;
+    for (let i = 0; i < 23; i++) deep = record(deep, true);
+    const root: Canon = {
+      k: "obj",
+      typeArgs: () => [],
+      props: () =>
+        [deep, shared].map((child, i) => ({
+          name: String(i),
+          optional: false,
+          readonly: true,
+          accessor: false,
+          type: () => child,
+        })),
+      index: () => [],
+      call: () => [],
+      construct: () => [],
+    };
+    const context = ctx();
+    const result = mapCanonical(root, context);
+    expect(result?.kind).toBe("record");
+    if (result?.kind !== "record") throw new Error("missing root record");
+    expect(context.shapes.get(result.shapeId)?.fields[1]?.type.kind).toBe("record");
+    expect(mapCanonical(shared, ctx(), 24)).toBeNull();
+  });
+
+  test("failed subgraphs are shared without losing checker fallbacks", () => {
+    let failures = 0;
+    const failed: Canon = {
+      k: "obj",
+      typeArgs: () => [],
+      props: () => {
+        failures++;
+        return [
+          {
+            name: "missing",
+            optional: false,
+            readonly: false,
+            accessor: false,
+            type: (): Canon => ({ k: "param", name: "T" }),
+          },
+        ];
+      },
+      index: () => [],
+      call: () => [],
+      construct: () => [],
+    };
+    const wrappers: Canon[] = [0, 1].map(() => ({
+      k: "obj",
+      src: valueTypes.get("sampleNumber")!,
+      typeArgs: () => [],
+      props: () => [
+        { name: "child", optional: false, readonly: false, accessor: false, type: () => failed },
+      ],
+      index: () => [],
+      call: () => [],
+      construct: () => [],
+    }));
+    const root: Canon = {
+      k: "obj",
+      typeArgs: () => [],
+      props: () =>
+        wrappers.map((child, i) => ({
+          name: String(i),
+          optional: false,
+          readonly: false,
+          accessor: false,
+          type: () => child,
+        })),
+      index: () => [],
+      call: () => [],
+      construct: () => [],
+    };
+    const context = ctx();
+    const result = mapCanonical(root, context);
+    expect(result?.kind).toBe("record");
+    if (result?.kind !== "record") throw new Error("missing root record");
+    expect(context.shapes.get(result.shapeId)?.fields.map((field) => field.type.kind)).toEqual([
+      "f64",
+      "f64",
+    ]);
+    expect(failures).toBe(1);
+  });
+
+  test("shared nodes retain dynamic-collapse notes", () => {
+    const shared: Canon = {
+      k: "union",
+      arms: [
+        { k: "prim", p: "string" },
+        { k: "top", t: "object" },
+      ],
+    };
+    const root: Canon = {
+      k: "obj",
+      typeArgs: () => [],
+      props: () =>
+        ["first", "second"].map((name) => ({
+          name,
+          optional: false,
+          readonly: true,
+          accessor: false,
+          type: () => shared,
+        })),
+      index: () => [],
+      call: () => [],
+      construct: () => [],
+    };
+    const notes: CanonMapNotes = { collapsedToDynamic: false };
+    const context = ctx();
+    const result = mapCanonical(root, context, 0, notes);
+    expect(notes.collapsedToDynamic).toBe(true);
+    if (result?.kind !== "record") throw new Error("missing root record");
+    expect(context.shapes.get(result.shapeId)?.fields.map((field) => field.type.kind)).toEqual([
+      "dyn",
+      "dyn",
+    ]);
+  });
+
+  test("each root call reads its current type bindings", () => {
+    const source = valueTypes.get("sampleNumber")!;
+    const node: Canon = { k: "param", name: "T", src: source };
+    let stringBinding = false;
+    const context: TypeMapperCtx = {
+      ...ctx(),
+      resolveTypeParam: (type) =>
+        type === source ? { kind: stringBinding ? "string" : "f64" } : null,
+    };
+    expect(mapCanonical(node, context)).toEqual({ kind: "f64" });
+    stringBinding = true;
+    expect(mapCanonical(node, context)).toEqual({ kind: "string" });
+  });
+
   test("shadow mode observes every successful top-level mapping", () => {
     const seen: string[] = [];
     const point = { kind: "object", className: "Point" } as const;
