@@ -322,7 +322,7 @@ export class LlDyn {
       case "dyn.dynCheckHelper":
         return this.dynCheckHelper(args[0] as IrType, args[1] as boolean, args[2] === true);
       case "dyn.toDynHelper":
-        return this.toDynHelper(args[0] as IrType);
+        return this.toDynHelper(args[0] as IrType, args[1] === true);
       case "dyn.promiseDynAdapterHelper":
         return this.promiseDynAdapterHelper(args[0] as IrType);
       case "dyn.dynFuncThunkHelper":
@@ -3601,13 +3601,16 @@ export class LlDyn {
     return { boxed: conv, release: `call void ${releaseSym(host, iv)}(ptr ${hit})` };
   }
 
-  toDynHelper(t: IrType): string {
+  /** The ordinary copying converter, or a live accessor snapshot whose
+   * data fields keep their reference identity. Intern the modes separately. */
+  toDynHelper(t: IrType, liveFields = false): string {
     const key = typeKey(t);
-    const existing = this.toDynFns.get(key);
+    const cacheKey = liveFields ? `${key}:live-fields` : key;
+    const existing = this.toDynFns.get(cacheKey);
     if (existing) return existing;
     const name = `sc_td_${this.toDynFns.size}`;
-    this.toDynFns.set(key, name);
-    this.host.journalAllocated?.(name, "dyn.toDynHelper", [t]);
+    this.toDynFns.set(cacheKey, name);
+    this.host.journalAllocated?.(name, "dyn.toDynHelper", liveFields ? [t, true] : [t]);
     const host = this.host;
     const B = new BlockBuilder();
     let sourceAccessor: { name: string; release: string } | null = null;
@@ -3794,7 +3797,7 @@ export class LlDyn {
         // A copy linked to its source converts as its composed record.
         emitLinkedRecordBranches(host, B, t.shapeId, "%v", (sourceT, composed) => {
           const r = B.tmp();
-          B.line(`${r} = call ptr @${this.toDynHelper(sourceT)}(ptr ${composed})`);
+          B.line(`${r} = call ptr @${this.toDynHelper(sourceT, liveFields)}(ptr ${composed})`);
           return `ret ptr ${r}`;
         });
         const struct = mangleRecordStruct(t.shapeId);
@@ -3943,8 +3946,13 @@ export class LlDyn {
             const fv = loadFieldOf(f.name, f.type);
             // An ABSENT optional field contributes no key.
             const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
-            const conv = B.tmp();
-            B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
+            // A live accessor record keeps its descriptor closures, but a
+            // data field must still name the same nested object on each read.
+            const conv = liveFields ? this.liveReadToDyn(B, f.type, fv) : B.tmp();
+            if (!liveFields)
+              B.line(
+                `${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`,
+              );
             B.line(
               `call void @scr_dyn_obj_set(ptr ${d}, ptr ${host.cstr(f.name)}, ${host.sizeType} ${klen}, ptr ${conv}) ; ${llvmCommentText(f.name)}`,
             );

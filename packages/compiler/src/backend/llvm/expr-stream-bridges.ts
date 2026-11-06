@@ -1147,9 +1147,9 @@ export function streamTypedRefMaterializeAdapter(
         `llvm emitter bug: stream typed-ref materialize of unknown shape ${t.shapeId}`,
       );
     }
-    /* Keep the ordinary converter for index-signature/listener records;
-     * their source-identity and overflow walks have extra contracts.
-     * Declared-field records and tuples cover the live stream values. */
+    /* Keep the descriptor converter for accessor records and the ordinary
+     * converter for index-signature/listener records, whose source identity
+     * and overflow walks have extra contracts. */
     const ordinary =
       shape.indexValue ||
       shapeHasAccessorSlots(shape) ||
@@ -1161,8 +1161,12 @@ export function streamTypedRefMaterializeAdapter(
         adapter.indexOps = `@${snapshot}_iops`;
         liveIndexOps(host, t, snapshot, shape);
       }
+      const liveFields =
+        !shape.indexValue &&
+        shapeHasAccessorSlots(shape) &&
+        !shape.fields.some((field) => field.name === "handleEvent" && field.type.kind === "func");
       const out = B.tmp();
-      B.line(`${out} = call ptr @${host.dyn.toDynHelper(t)}(ptr %p)`);
+      B.line(`${out} = call ptr @${host.dyn.toDynHelper(t, liveFields)}(ptr %p)`);
       B.terminate(`ret ptr ${out}`);
     } else if (shape.tuple) {
       host.declare(`declare ptr @scr_dyn_new_arr()`);
