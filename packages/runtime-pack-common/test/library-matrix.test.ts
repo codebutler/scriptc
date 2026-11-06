@@ -128,3 +128,30 @@ test("Wasm packs include reactor runtimes without thread-local state or a JS eng
     expect(sources).not.toContain("scr_async.c");
   }
 });
+
+test("epoch origin has a separate shared-clock variant in executable and library modes", () => {
+  for (const object_format of ["elf", "macho", "coff", "wasm"]) {
+    const pack = createRuntimePackMatrix({
+      target: { object_format },
+      compileFlags: [],
+      systemLibraries: [],
+    });
+    for (const units of [
+      pack.runtime_units,
+      ...Object.values(pack.flavors).map((flavor) => flavor.runtime_units ?? pack.runtime_units),
+    ]) {
+      const variants = units.find((unit) => unit.source === "scr_lib.c")!.variants;
+      expect(variants.some((variant) => variant.defines.includes("SCR_PERF_ORIGIN"))).toBe(true);
+      for (const variant of variants) {
+        expect(variant.defines.includes("SCR_PERF_ORIGIN")).toBe(variant.when.perfOrigin === true);
+      }
+      if (variants.some((variant) => variant.when.workers === true)) {
+        expect(
+          variants.some(
+            (variant) => variant.when.workers === true && variant.when.perfOrigin === true,
+          ),
+        ).toBe(true);
+      }
+    }
+  }
+});

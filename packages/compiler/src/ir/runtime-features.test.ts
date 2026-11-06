@@ -47,6 +47,14 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
+  test("epoch origin selects its runtime variant without changing now-only programs", () => {
+    const mod = module();
+    mod.functions[0]!.body.push(call("perf.now"));
+    expect(moduleRuntimeFeatures(mod).perfOrigin).toBe(false);
+    mod.functions[0]!.body.push(call("perf.timeOrigin"));
+    expect(moduleRuntimeFeatures(mod).perfOrigin).toBe(true);
+  });
+
   test("links the inspect unit for a BigInt rendered in Node's form", () => {
     const mod = module();
     mod.functions[0]!.body.push(call("bigint.inspect"));

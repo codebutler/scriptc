@@ -19,6 +19,11 @@ describe("library archive runtime gates", () => {
     });
   });
 
+  test("origin reads carry the same runtime variant into embedded libraries", () => {
+    expect(libraryArchiveFeatures({ ...base, perfOrigin: true }).perfOrigin).toBe(true);
+    expect(libraryArchiveFeatures(base).perfOrigin).toBeUndefined();
+  });
+
   test("a program that leaves buffers alone selects neither build", () => {
     const features = libraryArchiveFeatures(base);
     expect(features.mutableBuffers).toBeUndefined();

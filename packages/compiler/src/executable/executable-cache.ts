@@ -118,6 +118,8 @@ export interface EarlyExecutableNativeFeatures {
    * source: scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
   blobPrototypeValue?: boolean;
+  /** Epoch origin paired with the process monotonic anchor. */
+  perfOrigin?: boolean;
   /** Promise statics with a foreign constructor: scr_js_promise_generic.c. */
   promiseGeneric?: boolean;
   /** A computed read of the global object, or `… in globalThis`:

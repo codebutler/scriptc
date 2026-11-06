@@ -1334,6 +1334,8 @@ declare var Response: {
 };
 /* Blob and File (node:buffer, also globals): immutable bytes with a
  * content type. Sources are copied when the Blob is built. */
+type BlobPart = string | ArrayBuffer | ArrayBufferView | Blob;
+
 interface BlobPropertyBag {
   endings?: "transparent" | "native";
   type?: string;
@@ -1462,6 +1464,7 @@ declare module "node:perf_hooks" {
     start?: number | string | undefined;
   }
   export interface Performance {
+    readonly timeOrigin: number;
     now(): number;
     mark(name: string, options?: MarkOptions): PerformanceMark;
     measure(name: string, startMark?: string, endMark?: string): PerformanceMeasure;

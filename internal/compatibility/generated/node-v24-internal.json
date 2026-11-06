@@ -76125,6 +76125,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/runtime/src/scr_perf_origin.test.ts",
           "tests/corpus/2427-perf-hooks-now.ts",
           "tests/corpus/2446-performance-global.ts",
           "tests/corpus/2500-net-autosel-timeout.ts",
@@ -76140,6 +76141,8 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
+          "tests/corpus/performance-time-origin-worker/main.ts",
+          "tests/corpus/performance-time-origin.ts",
           "tests/fixtures/node-types/event-loop-metrics.ts"
         ]
       },
@@ -79683,8 +79686,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.timeOrigin",
+        "tests": [
+          "tests/corpus/performance-time-origin.ts",
+          "tests/corpus/performance-time-origin-worker/main.ts",
+          "packages/runtime/src/scr_perf_origin.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

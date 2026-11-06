@@ -128,6 +128,7 @@ const RECEIVER_FREE_LIB_FNS = new Set<IrLibFn>([
   "error.new",
   "error.nodeThrow",
   "perf.now",
+  "perf.timeOrigin",
   "atomics.op",
 ]);
 

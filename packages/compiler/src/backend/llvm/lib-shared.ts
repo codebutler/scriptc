@@ -367,6 +367,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "module.cacheHas": "scr_module_cache_has",
   "module.cacheKeys": "scr_module_cache_keys",
   "perf.now": "scr_perf_now",
+  "perf.timeOrigin": "scr_perf_time_origin",
   "perf.mark": "scr_perf_mark",
   "perf.measure": "scr_perf_measure",
   "perf.entries": "scr_perf_entries",

@@ -276,6 +276,9 @@ function withJsObjectModel(variants) {
 
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
+  if (source === "scr_lib.c") {
+    variants.push({ id: "perf-origin", when: { perfOrigin: true }, defines: ["SCR_PERF_ORIGIN"] });
+  }
   // scr_json.c builds one object per flavor (and workers mode): its paths
   // for Node island handles and handle classes call through tables that
   // scr_node_island_handle.c and scr_dyn_handle_class.c install when a

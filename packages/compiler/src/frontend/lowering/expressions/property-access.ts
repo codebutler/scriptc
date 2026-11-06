@@ -28,7 +28,7 @@ import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import { wrapperConstructors } from "../primitive-wrappers.js";
 import * as ts from "../../ts7/adapter.js";
-import { lowerHistogramProperty } from "../builtins/performance.js";
+import { lowerHistogramProperty, lowerPerfHooksProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import { INSPECT_CUSTOM_DESCRIPTION, isInspectCustomAccess } from "../symbol-fields.js";
@@ -473,9 +473,9 @@ export function lowerPropertyAccessExpr(
     const staticName = staticFunctionNameRead(lowerer, expr);
     if (staticName !== null) return { kind: "strLit", value: staticName, type: STRING, loc };
   }
-  // An IntervalHistogram's readings (min, max, mean, stddev, count, exceeds).
+  // Performance's epoch origin and an IntervalHistogram's scalar readings.
   {
-    const reading = lowerHistogramProperty(lowerer, expr);
+    const reading = lowerPerfHooksProperty(lowerer, expr) ?? lowerHistogramProperty(lowerer, expr);
     if (reading) return reading;
   }
   // An X509Certificate's publicKey KeyObject.

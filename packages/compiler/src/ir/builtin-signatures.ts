@@ -595,6 +595,7 @@ function buildLibFnSignatures() {
     "process.uptime": { argTypes: [], result: F64 },
     /** perf_hooks performance.now(): fractional ms since process start. */
     "perf.now": { argTypes: [], result: F64 },
+    "perf.timeOrigin": { argTypes: [], result: F64 },
     /** perf_hooks user timing over the thread's performance timeline. The
      * producing calls take the call's whole argument vector as one dyn
      * array (Node's validation and errors run in the runtime, MAY THROW):

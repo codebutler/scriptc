@@ -2772,6 +2772,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "the global performance object and the performance.now.bind(performance) function value reach the same clock",
     },
     {
+      id: "node-builtin.perf_hooks.performance.timeOrigin",
+      kind: "node-builtin",
+      name: "perf_hooks.performance.timeOrigin",
+      fns: ["perf.timeOrigin"],
+      note: "the immutable epoch origin paired with the process monotonic clock",
+    },
+    {
       id: "node-builtin.perf_hooks.performance.mark",
       kind: "node-builtin",
       name: "perf_hooks.performance.mark",

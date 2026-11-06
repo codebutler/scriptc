@@ -188,6 +188,8 @@ double scr_process_uptime(void);
 /* perf_hooks performance.now(): fractional ms since process start (the
  * uptime anchor — Node's timeOrigin for a compiled program). */
 double scr_perf_now(void);
+/* Immutable epoch origin captured with the uptime monotonic anchor. */
+double scr_perf_time_origin(void);
 /* perf_hooks event-loop metrics (scr_perf_loop.c). loop_mark records the
  * loop's start (the emitted main calls it before the loop runs, only in
  * programs that read the metric); loop_start answers it (0 before) and

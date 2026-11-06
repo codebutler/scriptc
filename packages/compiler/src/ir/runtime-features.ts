@@ -1442,6 +1442,7 @@ const RUNTIME_FEATURE_RULES = {
   parseArgs: rule({ fns: [...PARSE_ARGS_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS] }),
   /** perf_hooks event-loop metrics (eventLoopUtilization,
    * monitorEventLoopDelay): scr_perf_loop.c. */
+  perfOrigin: rule({ fns: ["perf.timeOrigin"] }),
   perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
   /** scr_pki.c over the mbedTLS archive: asymmetric KeyObjects and
    * signatures. */
@@ -1699,6 +1700,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     nodeIsland: false,
     nodeTest: false,
     parseArgs: false,
+    perfOrigin: false,
     perfLoop: false,
     pki: false,
     ed25519: false,

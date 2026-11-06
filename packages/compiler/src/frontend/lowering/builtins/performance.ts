@@ -56,6 +56,12 @@ const PERF_TIMELINE_CALLS: ReadonlyMap<string, { fn: IrLibFn; which?: number }> 
 
 /** Presence probes do not extract an unbound Performance method value. */
 export function lowerPerfHooksTypeof(lowerer: Lowerer, expression: ts.Expression): IrExpr | null {
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    lowerPerfHooksProperty(lowerer, expression) !== null
+  ) {
+    return { kind: "strLit", value: "number", type: STRING, loc: locOf(expression) };
+  }
   const value = isPerfHooksPerformanceExpr(lowerer, expression)
     ? "object"
     : ts.isPropertyAccessExpression(expression) &&
@@ -65,6 +71,20 @@ export function lowerPerfHooksTypeof(lowerer: Lowerer, expression: ts.Expression
       ? "function"
       : null;
   return value === null ? null : { kind: "strLit", value, type: STRING, loc: locOf(expression) };
+}
+
+/** The epoch origin is a scalar read over the same process clock as now(). */
+export function lowerPerfHooksProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (
+    expr.questionDotToken ||
+    expr.name.text !== "timeOrigin" ||
+    !isPerfHooksPerformanceExpr(lowerer, expr.expression)
+  )
+    return null;
+  return { kind: "libCall", fn: "perf.timeOrigin", args: [], type: F64, loc: locOf(expr) };
 }
 
 /** The node:perf_hooks spoke: `performance.now()` reads the runtime's

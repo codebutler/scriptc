@@ -147,6 +147,8 @@ export interface NativeLinkFeatures {
   stdlibPrototypeValue?: boolean;
   /** Canonical Blob/File prototypes and the borrowed Blob reader. */
   blobPrototypeValue?: boolean;
+  /** Epoch origin paired with the process monotonic anchor. */
+  perfOrigin?: boolean;
   /** A computed read of the global object, or `… in globalThis`, links
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c; absent (false) otherwise. */
