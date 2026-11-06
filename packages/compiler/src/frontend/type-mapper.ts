@@ -1559,6 +1559,11 @@ export interface TypeMapperCtx {
   /** With `lenient`: told each component the lenient mapping turned into
    * the checked dynamic (Lowerer.lenientPieces). */
   onLenientPiece?: (type: ts.Type) => void;
+  /** With lenient mapping: report the first occurrence of each failed checker
+   * type in this traversal, at the failing leaf. The callback records
+   * diagnostics only; it must not change mapping bindings or registries.
+   * The per-occurrence onLenientPiece hook takes precedence when both exist. */
+  onLenientPieceOnce?: (type: ts.Type) => void;
   /** Canonical normalization's shadow mode (canon-map.ts): called after
    * each successful top-level mapping; installed only under
    * SCRIPTC_CANON_SHADOW=1. It records, and never changes a result. */
@@ -1738,8 +1743,13 @@ function genChannels(
 }
 
 type LenientTraversalMemo = {
-  contexts: Map<TypeMapperCtx, Map<ts.Type, Map<number, IrType | null>>>;
+  contexts: Map<
+    TypeMapperCtx,
+    Map<ts.Type, Map<number, { type: IrType | null; degraded: boolean }>>
+  >;
   recursiveReads: number;
+  degradedReads: number;
+  notified: Set<ts.Type>;
 };
 
 /** SELF-REFERENTIAL types recurse through mapType with no structural floor:
@@ -2220,7 +2230,7 @@ function arrayClassBaseType(
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const ownedMemo: LenientTraversalMemo | undefined =
     ctx.lenient === true && ctx.lenientTraversalMemo === undefined
-      ? { contexts: new Map(), recursiveReads: 0 }
+      ? { contexts: new Map(), recursiveReads: 0, degradedReads: 0, notified: new Set() }
       : undefined;
   const active = ownedMemo === undefined ? ctx : { ...ctx, lenientTraversalMemo: ownedMemo };
   try {
@@ -2236,6 +2246,7 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // The temporary context contains the memo, whose context keys contain it
     // in turn. Break that cycle even when mapping throws.
     ownedMemo?.contexts.clear();
+    ownedMemo?.notified.clear();
   }
 }
 
@@ -2252,17 +2263,33 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // emptyLiteralArm is temporarily changed in place during union mapping.
   const key = mapTypeDepth * 2 + (ctx.emptyLiteralArm ? 1 : 0);
   const known = memo.contexts.get(ctx)?.get(type)?.get(key);
-  if (known !== undefined) return known;
+  if (known !== undefined) {
+    // Ancestors must still see a degradation: recursive owners that relied
+    // on a failed child cannot finalize a typed placeholder on a memo hit.
+    if (known.degraded) {
+      contextResolutions++;
+      memo.degradedReads++;
+    }
+    return known.type;
+  }
   const resolutions = contextResolutions;
   const scopeReads = scopeSensitivity;
   const recursiveReads = memo.recursiveReads;
+  const degradedReads = memo.degradedReads;
   const mapped = mapTypeUncachedEntry(type, ctx);
-  // Reusing a degraded or binding-sensitive result would skip its effects.
+  // Arbitrary per-occurrence callbacks cannot be skipped. A once collector
+  // already saw every failed piece in this completed mapping, so its only
+  // remaining effect on a hit is the sensitivity marker above. Every other
+  // context resolution (including a bound generic) still prevents reuse.
+  const collectedDegradation =
+    ctx.onLenientPiece === undefined &&
+    ctx.onLenientPieceOnce !== undefined &&
+    contextResolutions - resolutions === memo.degradedReads - degradedReads;
   // A recursive back-reference is provisional until its owner finalizes,
   // and that owner can still fail. Do not cache it or a containing piece.
   // Leave those paths unchanged; only ordinary completed pieces are shared.
   if (
-    contextResolutions === resolutions &&
+    (contextResolutions === resolutions || collectedDegradation) &&
     scopeSensitivity === scopeReads &&
     memo.recursiveReads === recursiveReads
   ) {
@@ -2270,7 +2297,7 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (byType === undefined) memo.contexts.set(ctx, (byType = new Map()));
     let byDepth = byType.get(type);
     if (byDepth === undefined) byType.set(type, (byDepth = new Map()));
-    byDepth.set(key, mapped);
+    byDepth.set(key, { type: mapped, degraded: contextResolutions !== resolutions });
   }
   return mapped;
 }
@@ -2374,7 +2401,13 @@ function mapTypeUncachedEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null 
     if (mapped === null && ctx.lenient === true && !topLevel) {
       mapped = DYN;
       contextResolutions++;
-      ctx.onLenientPiece?.(type);
+      const memo = ctx.lenientTraversalMemo;
+      if (memo) memo.degradedReads++;
+      if (ctx.onLenientPiece !== undefined) ctx.onLenientPiece(type);
+      else if (ctx.onLenientPieceOnce !== undefined && !memo?.notified.has(type)) {
+        memo?.notified.add(type);
+        ctx.onLenientPieceOnce(type);
+      }
     }
     if (
       mapped !== null &&

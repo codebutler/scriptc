@@ -25,12 +25,21 @@ beforeAll(() => {
     (_, i) => `type D${i + 1} = { left: D${i}; right: D${i} };`,
   );
   const deep = Array.from({ length: 65 }, (_, i) => `type Deep${i + 1} = { next: Deep${i} };`);
+  const failedLayers = Array.from(
+    { length: 10 },
+    (_, i) => `type Failed${i + 1}<T> = { left: Failed${i}<T>; right: Failed${i}<T> };`,
+  );
   writeFileSync(
     entry,
     `
       type D0 = { value: number };
       ${layers.join("\n")}
       export type Diamond = D10;
+      type Failed0<T> = { stable: number; bad: T };
+      ${failedLayers.join("\n")}
+      export type FailedDiamond<T> = Failed10<T>;
+      type FailedLoop<T> = { next: FailedLoop<T>; field: Failed0<T> };
+      export type ReusedFailure<T> = { first: { child: Failed0<T> }; second: FailedLoop<T> };
       type Deep0 = { value: number };
       ${deep.join("\n")}
       export type Depths = { deep: Deep65; shallow: Deep0 };
@@ -205,4 +214,109 @@ test("a failed recursive union cannot leave a cached provisional child union", (
   const ctx = context();
   ctx.resolveTypeParam = () => null;
   expect(mapped("UnionContexts", ctx)).toEqual({ kind: "dyn" });
+});
+
+test("a once collector reuses degraded DAGs and preserves the mapped layout", () => {
+  const legacy = context();
+  const every: ts.Type[] = [];
+  legacy.onLenientPiece = (type) => every.push(type);
+  const expected = mapped("FailedDiamond", legacy);
+  expect(every).toHaveLength(1024);
+  expect(new Set(every).size).toBe(1);
+
+  const ctx = context();
+  const once: ts.Type[] = [];
+  ctx.onLenientPieceOnce = (type) => once.push(type);
+  const original = ctx.checker.getTypeOfSymbol;
+  let reads = 0;
+  ctx.checker.getTypeOfSymbol = (symbol) => {
+    reads++;
+    return original.call(ctx.checker, symbol);
+  };
+  try {
+    expect(mapped("FailedDiamond", ctx)).toEqual(expected);
+  } finally {
+    ctx.checker.getTypeOfSymbol = original;
+  }
+  expect(reads).toBeLessThan(100);
+  expect(once).toEqual([every[0]]);
+  expect(ctx.shapes.shapes).toEqual(legacy.shapes.shapes);
+});
+
+test("the per-occurrence hook takes precedence over a once collector", () => {
+  const ctx = context();
+  let every = 0;
+  let once = 0;
+  ctx.onLenientPiece = () => every++;
+  ctx.onLenientPieceOnce = () => once++;
+  expect(mapped("FailedDiamond", ctx)?.kind).toBe("record");
+  expect(every).toBe(1024);
+  expect(once).toBe(0);
+});
+
+test("a throwing once collector leaves no reusable completed entry or notification", () => {
+  const ctx = context();
+  const failure = new Error("collector failure");
+  let calls = 0;
+  ctx.onLenientPieceOnce = () => {
+    if (++calls === 1) throw failure;
+  };
+  let caught: unknown;
+  try {
+    mapped("FailedDiamond", ctx);
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBe(failure);
+  expect(mapped("FailedDiamond", ctx)?.kind).toBe("record");
+  expect(calls).toBe(2);
+});
+
+test("a reused degradation still prevents recursive-owner finalization", () => {
+  const legacy = context();
+  const every = new Set<ts.Type>();
+  legacy.onLenientPiece = (type) => every.add(type);
+  const expected = mapped("ReusedFailure", legacy);
+  expect(fields(expected, legacy).find((field) => field.name === "second")?.type).toEqual({
+    kind: "dyn",
+  });
+  const ctx = context();
+  const once = new Set<ts.Type>();
+  ctx.onLenientPieceOnce = (type) => once.add(type);
+  expect(mapped("ReusedFailure", ctx)).toEqual(expected);
+  expect(once).toEqual(every);
+});
+
+test("once collection does not hide a scope change after an unbound parameter", () => {
+  const ctx = context();
+  const once: ts.Type[] = [];
+  let resolutions = 0;
+  ctx.onLenientPieceOnce = (type) => once.push(type);
+  ctx.resolveTypeParam = () => {
+    noteScopeSensitiveMapping();
+    return ++resolutions === 1 ? null : { kind: "string" };
+  };
+  expect(fields(mapped("Generic", ctx), ctx).map((field) => field.type)).toEqual([
+    { kind: "dyn" },
+    { kind: "string" },
+  ]);
+  expect(resolutions).toBe(2);
+  expect(once).toHaveLength(1);
+});
+
+test("once notification happens at the first failed leaf before the next field", () => {
+  const ctx = context();
+  const order: string[] = [];
+  ctx.onLenientPieceOnce = () => order.push("piece");
+  const original = ctx.checker.getTypeOfSymbol;
+  ctx.checker.getTypeOfSymbol = (symbol) => {
+    order.push("field:" + ts.symbolName(symbol));
+    return original.call(ctx.checker, symbol);
+  };
+  try {
+    expect(mapped("Generic", ctx)).toEqual({ kind: "dyn" });
+  } finally {
+    ctx.checker.getTypeOfSymbol = original;
+  }
+  expect(order).toEqual(["field:left", "piece", "field:right"]);
 });

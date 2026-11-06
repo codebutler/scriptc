@@ -11985,7 +11985,8 @@ export class Lowerer {
    * mapped with each failing component as the checked dynamic, so a record
    * keeps its static members, an array of records its records, and a
    * function its arity. The whole slot is the checked dynamic when even
-   * that shape does not map. Throwaway context: nothing memoizes. */
+   * that shape does not map. The throwaway context has no persistent memo;
+   * its once collector records each failed type at its first occurrence. */
   lenientType(type: ts.Type): IrType {
     const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
     const owner = this.checker.typeToString(type);
@@ -11993,7 +11994,7 @@ export class Lowerer {
       ...strict,
       lenient: true,
       canMemoizeType: () => false,
-      onLenientPiece: (piece) => {
+      onLenientPieceOnce: (piece) => {
         const id = (piece as { id?: number }).id;
         if (id !== undefined && !this.lenientPieces.has(id)) this.lenientPieces.set(id, owner);
       },
