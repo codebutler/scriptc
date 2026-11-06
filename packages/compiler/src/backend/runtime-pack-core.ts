@@ -112,6 +112,8 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c). */
   stdlibPrototypeValue?: boolean;
+  /** Canonical Blob/File prototypes and the borrowed Blob reader. */
+  blobPrototypeValue?: boolean;
   /** A computed read of the global object, or `… in globalThis`
    * (scr_global_host_absent.c). */
   hostAbsentGlobals?: boolean;
@@ -363,6 +365,7 @@ export function effectiveRuntimeFeatures(
     dynBuffer: features.dynBuffer === true,
     builtinValues: features.builtinValues === true,
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
+    blobPrototypeValue: features.blobPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinPrototypeValue: features.builtinPrototypeValue === true,

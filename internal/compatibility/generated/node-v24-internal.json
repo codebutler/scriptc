@@ -2708,6 +2708,8 @@
           "tests/corpus/5530-buffer-pool.ts",
           "tests/corpus/5531-buffer-pool-first-slab.ts",
           "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs",
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/node24-buffer-encoding-errors.ts",
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/fixtures/node-types/blob-file.ts",
@@ -3247,6 +3249,8 @@
         "status": "partial",
         "evidence": "compiler-feature:buffer.Blob",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5288-blob-validation.js",
           "tests/fixtures/node-types/blob-file.ts"
@@ -3298,6 +3302,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.blob.arrayBuffer",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -3329,6 +3335,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.blob.bytes",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -3360,6 +3368,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.blob.slice",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -3414,6 +3424,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.blob.text",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -3468,6 +3480,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.blob.size",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -3499,6 +3513,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.type",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -5154,6 +5170,8 @@
         "status": "partial",
         "evidence": "compiler-feature:buffer.File",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5288-blob-validation.js",
           "tests/fixtures/node-types/blob-file.ts"
@@ -5182,6 +5200,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.name",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -5213,6 +5233,8 @@
         "status": "supported",
         "evidence": "compiler-feature:buffer.lastModified",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5288-blob-validation.js",
@@ -52489,6 +52511,8 @@
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -52737,6 +52761,8 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.Blob",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5287-blob-inspect.ts",
@@ -53096,6 +53122,8 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.File",
         "tests": [
+          "tests/corpus/blob-prototype-intrinsics.ts",
+          "tests/corpus/blob-prototype-read-order.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5287-blob-inspect.ts",

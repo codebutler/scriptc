@@ -2,3 +2,6 @@
   Other iterables throw `SC2020`.
   `blob.stream()`, `blob.textStream()`, `URL.createObjectURL()`, `stream/consumers` `blob()`, and Blob or File fetch bodies are unsupported.
   Blobs cannot be sent to workers.
+  `Blob.prototype` and `File.prototype` have stable identity, including the File-to-Blob prototype chain.
+  `Blob.prototype.arrayBuffer.call(value)` accepts Blob and File receivers and returns a fresh byte copy through a Promise; incompatible receivers reject with `TypeError`.
+  Subclassing, instance method replacements, prototype mutation, and other prototype member reflection remain unsupported.

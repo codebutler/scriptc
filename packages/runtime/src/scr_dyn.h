@@ -1820,6 +1820,18 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
  * `prototype` is the same object). Named by the constructor whose interface
  * it carries; dyn.stdlibPrototype's implementation. */
 ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name);
+
+/* Optional native prototype reflection, installed only by a gated unit.
+ * NULL answers mean the name/value belongs to another implementation. */
+typedef struct ScrDynNativePrototypeHooks {
+  ScrDyn *(*named)(const ScrStr *name);
+  ScrDyn *(*of)(const ScrDyn *value);
+  bool (*invoke)(const ScrStr *owner, const ScrStr *method, ScrDyn *receiver, ScrDyn **result);
+  bool (*fence)(const ScrDyn *value, const char *operation);
+  bool (*read_fence)(const ScrDyn *value, const char *key, size_t length);
+} ScrDynNativePrototypeHooks;
+extern const ScrDynNativePrototypeHooks *scr_dyn_native_prototype_hooks;
+
 ScrStr *scr_dyn_to_string_argument(const ScrDyn *d, const ScrDyn *argument, const ScrStr *what);
 ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what);
 ScrStr *scr_dyn_error_string(const ScrDyn *d);

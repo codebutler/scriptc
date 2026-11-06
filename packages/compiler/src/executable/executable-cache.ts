@@ -117,6 +117,7 @@ export interface EarlyExecutableNativeFeatures {
   /** A standard library prototype object read as a value in a JavaScript
    * source: scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  blobPrototypeValue?: boolean;
   /** Promise statics with a foreign constructor: scr_js_promise_generic.c. */
   promiseGeneric?: boolean;
   /** A computed read of the global object, or `… in globalThis`:

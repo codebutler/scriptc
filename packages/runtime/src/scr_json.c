@@ -29,6 +29,14 @@
 static SCR_TL ScrDyn *scr_builtin_object_prototype;
 
 const ScrDateClassHooks *scr_date_class_hooks = NULL;
+const ScrDynNativePrototypeHooks *scr_dyn_native_prototype_hooks = NULL;
+
+/* Canonical native prototypes can expose identity without admitting an
+ * incomplete property surface to generic object reflection. */
+static bool scr_dyn_native_prototype_reflection_fence(const ScrDyn *value) {
+  return scr_dyn_native_prototype_hooks &&
+      scr_dyn_native_prototype_hooks->fence(value, "member reflection");
+}
 
 /* Native Error fields still use their compiled accessors. Prototype
  * mutation cannot update those accessors, so every family keeps the
@@ -45,6 +53,7 @@ static const char *const scr_error_ctor_names[SCR_ERR_COUNT] = {
 static SCR_TL ScrDyn *scr_error_prototypes[SCR_ERROR_CTORS];
 static bool scr_dyn_error_prototype_fence(const ScrDyn *value) {
   if (!value) return false;
+  if (scr_dyn_native_prototype_hooks && scr_dyn_native_prototype_hooks->fence(value, "mutation")) return true;
   for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
     if (value != scr_error_prototypes[i]) continue;
     char message[128];
@@ -2812,6 +2821,10 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
 static int scr_dyn_error_view_prototype_kind(const ScrDyn *object);
 
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
+  if (scr_dyn_native_prototype_hooks) {
+    ScrDyn *prototype = scr_dyn_native_prototype_hooks->of(object);
+    if (prototype || scr_exc_pending()) return prototype;
+  }
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
   if (object->kind == SCR_DYN_OBJ) {
     int kind = scr_dyn_error_view_prototype_kind(object);
@@ -10442,6 +10455,7 @@ static ScrDyn *scr_dyn_define_symbol(ScrDyn *target, ScrDyn *key, ScrDyn *descri
 }
 
 static bool scr_dyn_key_probe_computed(const ScrDyn *value, const ScrDyn *raw_key, int mode) {
+  if (scr_dyn_native_prototype_reflection_fence(value)) return false;
   // `in` checks its receiver before converting the key: a primitive receiver
   // throws Node's TypeError, and the key's own toString must not run.
   if (mode == 0 && scr_dyn_primitive_kind(value)) {
@@ -10871,6 +10885,7 @@ ScrDyn *scr_dyn_define_property_shapes(ScrDyn *target, ScrDyn *key, ScrDyn *desc
 }
 
 ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key) {
+  if (scr_dyn_native_prototype_reflection_fence(target)) return NULL;
   if (key->kind == SCR_DYN_SYMBOL) {
     ScrDyn *receiver = scr_dyn_symbol_receiver(target);
     if (!receiver) {
@@ -13149,6 +13164,7 @@ static const char *scr_dyn_kind_name(const ScrDyn *d);
  * valid dense index, every other kind false (tsc admits `in` only on
  * object-typed operands). Proxy traps may throw. Borrows both. */
 bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
+  if (scr_dyn_native_prototype_reflection_fence(v)) return false;
   if (scr_dyn_generator(v)) {
     static const char *const inherited[] = { "next", "return", "throw", "constructor", "toString", "valueOf", "hasOwnProperty", "propertyIsEnumerable", "isPrototypeOf", "toLocaleString", "__proto__" };
     for (size_t i = 0; i < sizeof inherited / sizeof inherited[0]; i++)
@@ -17200,6 +17216,7 @@ bool scr_dyn_err_instanceof(const ScrDyn *d, double kind) {
 
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver) {
   for (const ScrDyn *current = d; current; current = scr_dyn_proto_next(current)) {
+    if (scr_dyn_native_prototype_hooks && scr_dyn_native_prototype_hooks->read_fence(current, key, key_len)) return NULL;
     if (current == scr_builtin_object_prototype) {
       scr_dyn_class_reflection_fence(current);
       return NULL;
@@ -17661,6 +17678,7 @@ static bool scr_dyn_obj_data_only(const ScrDyn *v) {
 }
 
 ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v) {
+  if (scr_dyn_native_prototype_reflection_fence(v)) return NULL;
   size_t *order = scr_dyn_obj_key_order(v);
   ScrDyn *keys = scr_dyn_new_arr();
   scr_dyn_arr_reserve(keys, v->v.obj.len);
@@ -17674,6 +17692,7 @@ ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v) {
 }
 
 ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
+  if (scr_dyn_native_prototype_reflection_fence(value)) return NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     if (scr_exc_pending()) { scr_dyn_release(view); return NULL; }
@@ -17760,6 +17779,7 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
 }
 
 ScrDyn *scr_dyn_get_own_property_symbols(const ScrDyn *value) {
+  if (scr_dyn_native_prototype_reflection_fence(value)) return NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     if (scr_exc_pending()) { scr_dyn_release(view); return NULL; }
@@ -17889,6 +17909,7 @@ static ScrDyn *scr_dyn_obj_data_walk(const ScrDyn *v, ScrObjWalk mode) {
 }
 
 static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
+  if (scr_dyn_native_prototype_reflection_fence(v)) return NULL;
   if (scr_dyn_class_reflection_fence(v)) return NULL;
   if (scr_typed_ref_linked_live(v)) {
     ScrDyn *snapshot = scr_dyn_typed_ref_peek(v);
@@ -18292,6 +18313,7 @@ static ScrArr *scr_dyn_key_strs_from(ScrDyn *keys) {
  * ascending, then insertion order) when its prototype contributes none.
  * Every other value takes the dyn walk and converts its result. */
 ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v) {
+  if (scr_dyn_native_prototype_reflection_fence(v)) return NULL;
   if (scr_dyn_class_reflection_fence(v)) return NULL;
   /* A plain object's prototype adds keys unless it is Object.prototype. */
   if (v->kind != SCR_DYN_OBJ || v->prototype == NULL ||
@@ -18304,6 +18326,7 @@ ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v) {
 
 /* Object.keys as a native string[] (+1): a fresh array the caller owns. */
 ScrArr *scr_dyn_obj_key_strs(const ScrDyn *v) {
+  if (scr_dyn_native_prototype_reflection_fence(v)) return NULL;
   if (scr_dyn_class_reflection_fence(v)) return NULL;
   ScrArr *own = scr_dyn_own_key_strs(v, false);
   if (own) return own;
@@ -18323,6 +18346,7 @@ static ScrDynEntryPairs *scr_dyn_entry_pairs_new(size_t cap) {
  * entries in own-key order, or the dyn walk's pairs for every other
  * value. */
 ScrDynEntryPairs *scr_dyn_obj_entry_pairs(const ScrDyn *v) {
+  if (scr_dyn_native_prototype_reflection_fence(v)) return NULL;
   if (scr_dyn_class_reflection_fence(v)) return NULL;
   if (scr_typed_ref_linked_live(v)) {
     ScrDyn *snapshot = scr_dyn_typed_ref_peek(v);
@@ -18392,6 +18416,7 @@ static uint64_t *scr_dyn_value_slots(size_t count, uint64_t *stack, size_t stack
  * typed record's present fields, a plain data object's enumerable own
  * values in own-key order, or the dyn walk's values for every other value. */
 ScrArr *scr_dyn_obj_value_list(const ScrDyn *v) {
+  if (scr_dyn_native_prototype_reflection_fence(v)) return NULL;
   if (scr_dyn_class_reflection_fence(v)) return NULL;
   if (scr_typed_ref_linked_live(v)) {
     ScrDyn *snapshot = scr_dyn_typed_ref_peek(v);
@@ -18976,6 +19001,7 @@ static bool scr_dyn_canonical_own_index(const ScrStr *key, size_t length) {
 }
 
 bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
+  if (scr_dyn_native_prototype_reflection_fence(v)) return false;
   if (scr_typed_ref_linked_live(v)) {
     ScrDyn *snapshot = scr_dyn_typed_ref_peek(v);
     bool out = scr_dyn_has_own(snapshot, key);
@@ -19052,6 +19078,7 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
 }
 
 bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
+  if (scr_dyn_native_prototype_reflection_fence(value)) return false;
   if (scr_dyn_class_reflection_fence(value)) return false;
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);

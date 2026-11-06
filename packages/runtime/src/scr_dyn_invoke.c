@@ -1871,6 +1871,13 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
   ScrStr *method = scr_box_get_ref(closure->caps[1]);
   ScrDyn *receiver = scr_dyn_this_get();
   ScrDyn *result = NULL;
+  if (scr_dyn_native_prototype_hooks &&
+      scr_dyn_native_prototype_hooks->invoke(prototype, method, receiver, &result)) {
+    scr_dyn_release(receiver);
+    scr_str_release(prototype);
+    scr_str_release(method);
+    return result;
+  }
   if (!strcmp(prototype->data, "Object")) {
     ScrDyn *key = argc ? args[0] : scr_dyn_undefined();
     if (!strcmp(method->data, "toString")) {

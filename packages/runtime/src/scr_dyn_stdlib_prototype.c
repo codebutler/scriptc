@@ -144,6 +144,10 @@ static ScrDyn *dyn_stdlib_prototype_build_date(const ScrStr *name) {
  * dyn.stdlibPrototype's implementation. `name` is a string literal the
  * frontend emitted, so an unknown one is a compiler/runtime mismatch. */
 ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name) {
+  if (scr_dyn_native_prototype_hooks) {
+    ScrDyn *native = scr_dyn_native_prototype_hooks->named(name);
+    if (native || scr_exc_pending()) return native;
+  }
   ScrDyn *error = scr_dyn_error_family_prototype(name);
   if (error) return error;
   if (strcmp(name->data, "Date") != 0) {

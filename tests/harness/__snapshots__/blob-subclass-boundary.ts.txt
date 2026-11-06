@@ -1,0 +1,12 @@
+blob-subclass-boundary.ts:1:26 - error SC1090: extending classes not declared in the program ('Blob') is not supported yet
+
+  1 | class CustomBlob extends Blob {}
+    |                          ^~~~
+  2 | new CustomBlob(["bytes"]);
+
+blob-subclass-boundary.ts:2:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  1 | class CustomBlob extends Blob {}
+  2 | new CustomBlob(["bytes"]);
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~
+  3 | 

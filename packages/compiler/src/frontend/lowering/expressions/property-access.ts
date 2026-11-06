@@ -1,3 +1,4 @@
+import { lowerBlobPrototypeRead } from "../builtins/blob.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
@@ -2287,6 +2288,8 @@ export function lowerIntrinsicProperty(
     lowerer.stdlibGlobalMember(expr.expression, "Object") === "prototype"
   )
     return builtinGlobalValue("Object", locOf(expr));
+  const blobPrototype = lowerBlobPrototypeRead(lowerer, expr);
+  if (blobPrototype) return blobPrototype;
   const primitivePrototype = jsPrimitivePrototypeValue(lowerer, expr);
   if (primitivePrototype) return primitivePrototype;
   const builtinPrototype = builtinPrototypeMethod(lowerer, expr);

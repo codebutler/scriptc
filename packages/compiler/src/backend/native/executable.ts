@@ -225,6 +225,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.stdlibPrototypeValue === true && u.opts.dynInvoke,
     "scr_dyn_stdlib_prototype.c",
   ),
+  unit((u) => u.opts.blobPrototypeValue === true, "scr_blob_prototype.c"),
   // Array.prototype's generic algorithms over array-like receivers, and the
   // Number/Boolean prototype objects as values: the dynamic tier's gated
   // units, whose work is JavaScript-only.
