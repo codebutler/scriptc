@@ -4189,7 +4189,9 @@ export type IrExpr =
    * TruncationResult`). The conversion answers a partial record view
    * (record-views.ts): a `type` value whose fields the source lacks are
    * absent, so presence tests answer false and reads of them throw the
-   * catchable TypeError. */
+   * catchable TypeError. A dynamic operand instead admits a source-backed
+   * view of a structural API object: field checks retain their target
+   * types, while property access and boxing retain the original object. */
   /** `adopt`: the declaration-typed boundary's cast (decl-projection.ts).
    * The conversion preserves identity: a source object or array that
    * something else still references (reference count above one) is

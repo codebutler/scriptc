@@ -1974,3 +1974,34 @@ console.log(inspect(sab));
     );
   });
 });
+
+describe("source-backed structural API view refusals", () => {
+  test("accessors are refused without calls and failed recursive checks release their holds", async () => {
+    const result = await compileAndRun(
+      "source-view-accessors",
+      `
+interface Api { next?: Api; value: number; call(): number; }
+let calls = 0;
+const source: unknown = Object.create(null);
+Object.defineProperty(source, "call", { value: () => 1, configurable: true });
+Object.defineProperty(source, "next", { value: source, configurable: true });
+Object.defineProperty(source, "value", { get() { calls++; return 7; }, configurable: true });
+for (let index = 0; index < 3; index++) {
+  try { const bad = source as Api; console.log("unexpected", bad.value); }
+  catch (error) { console.log(error instanceof TypeError, calls); }
+}
+Object.defineProperty(source, "value", { value: 9, writable: true, configurable: true });
+const view = source as Api;
+console.log(view.value, view.next === view, calls);
+Object.defineProperty(source, "value", { get() { calls++; return 10; }, configurable: true });
+try { console.log(view.value); } catch (error) { console.log("read", error instanceof TypeError, calls); }
+try { view.value = 11; } catch (error) { console.log("write", error instanceof TypeError, calls); }
+`,
+    );
+    expect(result).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: "true 0\ntrue 0\ntrue 0\n9 true 0\nread true 0\nwrite true 0\n",
+    });
+  });
+});

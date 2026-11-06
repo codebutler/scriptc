@@ -2093,6 +2093,19 @@ typedef struct ScrDynPath {
   const char *key;
   size_t index;
 } ScrDynPath;
+void *scr_dyn_source_record_view(ScrDyn *source, void *(*alloc)(void), const ScrDynPath *path);
+ScrDyn *scr_dyn_source_record_read(ScrDyn *source, const char *name, size_t name_len,
+                                   const ScrDynPath *path);
+ScrDyn *scr_record_source_view_source(void *view); /* borrowed, or NULL */
+bool scr_record_source_view_trace(void *view, void (*visit)(void *, void *), void *ctx);
+void scr_record_source_view_gc_clear(void *view);
+void scr_record_source_view_refuse_clone(void *view);
+void *scr_record_source_view_identity(void *view);
+void scr_dyn_build_hold(void *value, void *(*retain)(void *), void (*release)(void *));
+ScrDyn *scr_record_source_view_read(void *view, const char *name, size_t name_len);
+bool scr_record_source_view_has(void *view, const char *name, size_t name_len);
+void scr_record_source_view_set(void *view, const char *name, size_t name_len, ScrDyn *value);
+
 ScrSearchParams *scr_dyn_native_search_params_check(const ScrDyn *value, const ScrDynPath *path);
 ScrSearchParams *scr_sp_new_checked(const ScrDyn *value);
 ScrMap *scr_dyn_native_set_check(const ScrDyn *value, const ScrDynPath *path);

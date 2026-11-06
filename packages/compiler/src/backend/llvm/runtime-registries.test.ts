@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import { ARRAY_PROTOTYPE_MEMBER_NAMES } from "../../ir/runtime-features.js";
 import { BYTES_ELEM_NUM, CLOSURE_KIND, SCR_ARR_FROZEN, SCR_ARR_STATES } from "./common.js";
+import { SOURCE_RECORD_MAP_KEY } from "./shapes.js";
 import { DYN_KIND, MESSAGE_KIND } from "./dyn.js";
 
 // The backend writes the numbers of several runtime enums and flag sets
@@ -146,4 +147,10 @@ test("the %ScrArr spare flags the backend tests match scr_array.h", () => {
   expectSingleBits(spare, "%ScrArr spare");
   expect(spare.get("STATES")).toBe(SCR_ARR_STATES);
   expect(spare.get("FROZEN")).toBe(SCR_ARR_FROZEN);
+});
+
+test("source-record collection keys match the runtime registry", () => {
+  const kinds = cEnum("scr_map.h", "ScrMapKeyKind");
+  expectDistinct(kinds, "ScrMapKeyKind");
+  expect(kinds.get("SCR_MAP_KEY_SOURCE_RECORD")).toBe(SOURCE_RECORD_MAP_KEY);
 });

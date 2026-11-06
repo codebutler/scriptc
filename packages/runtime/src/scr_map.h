@@ -53,7 +53,7 @@ typedef enum {
   SCR_MAP_KEY_F64, SCR_MAP_KEY_STR, SCR_MAP_KEY_REF, SCR_MAP_KEY_UNION_REF, SCR_MAP_KEY_DYN,
   SCR_MAP_KEY_BIGINT, SCR_MAP_KEY_BOOL, SCR_MAP_KEY_UNION_VALUE,
   SCR_MAP_KEY_NULL, SCR_MAP_KEY_UNDEFINED /* tag-only union arms */,
-  SCR_MAP_KEY_CLOSURE
+  SCR_MAP_KEY_CLOSURE, SCR_MAP_KEY_SOURCE_RECORD
 } ScrMapKeyKind;
 /* SCR_MAP_VAL_CREF: a string-key map whose values are compact class
  * instances in the program-lifetime region (llvm/classes.ts

@@ -1473,6 +1473,8 @@ export function mapFlagsOffset(sizeType: "i32" | "i64"): number {
   return (sizeType === "i64" ? 8 : 4) + 3;
 }
 
+export const SOURCE_RECORD_MAP_KEY = 11;
+
 /** The ScrMapKeyKind / ScrMapValKind constants for scr_map_new. */
 export function mapKeyKindNum(key: IrType, unionArms?: IrType[]): number {
   if (key.kind === "dyn") return 4;
@@ -2707,9 +2709,18 @@ export function emitRecordShapes(
         `define internal void @${mangleRecordTrace(shape.id)}(ptr %o, ptr %visit, ptr %ctx) ${FN_ATTRS} {`,
         `entry:`,
       ];
+      if (host.recordViews?.sourceTargets.has(shape.id)) {
+        host.declare(`declare zeroext i1 @scr_record_source_view_trace(ptr, ptr, ptr)`);
+        tr.push(
+          `  %source = call zeroext i1 @scr_record_source_view_trace(ptr %o, ptr %visit, ptr %ctx)`,
+          `  br i1 %source, label %done, label %fields`,
+          `fields:`,
+        );
+      }
       tracedMembers.forEach((m, i) => {
         tr.push(...traceFieldVisitLines(struct, m.index, i, llvmCommentText(m.name)));
       });
+      if (host.recordViews?.sourceTargets.has(shape.id)) tr.push(`  br label %done`, `done:`);
       tr.push(`  ret void`, `}`, ``);
       defs.push(...tr);
 
@@ -2717,6 +2728,10 @@ export function emitRecordShapes(
         `define internal void @${mangleRecordGcFree(shape.id)}(ptr %o) ${FN_ATTRS} {`,
         `entry:`,
       ];
+      if (host.recordViews?.sourceTargets.has(shape.id)) {
+        host.declare(`declare void @scr_record_source_view_gc_clear(ptr)`);
+        gf.push(`  call void @scr_record_source_view_gc_clear(ptr %o)`);
+      }
       untracedRefMembers.forEach((m, i) => {
         gf.push(
           `  %f${i} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${m.index}`,

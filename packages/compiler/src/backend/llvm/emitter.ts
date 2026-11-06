@@ -1,3 +1,4 @@
+import { sourceRecordViewTargets } from "../../ir/source-record-views.js";
 import type { TargetCpu } from "../target-cpu.js";
 import { loopEntryInlines } from "./loop-entry-versions.js";
 import type { FunctionLayout } from "./function-layout.js";
@@ -2217,12 +2218,19 @@ export class LlEmitter {
     if (int32Analysis !== null) this.int32SlotsValue = int32Analysis.slots;
     else this.startInt32Slots(dynamicStores);
     this.stackTraces = observesStacks(mod, this.nodeIndex);
+    const sourceViewShapes = sourceRecordViewTargets(mod);
+    const sourceViewUnions = new Set(options.boxedUnions);
+    for (const union of mod.unions ?? []) {
+      const records = union.arms.filter((arm) => arm.kind === "record");
+      if (records.length > 1 && records.some((arm) => sourceViewShapes.has(arm.shapeId)))
+        sourceViewUnions.add(union.id);
+    }
     this.nullableUnions = new NullableUnions(
       mod,
       options.debugSources === undefined,
       this.nodeIndex,
       options.pointerBits !== 32,
-      options.boxedUnions,
+      sourceViewUnions,
     );
     this.heapCensus = heapCensusOf(mod, this.nullableUnions);
     for (const decl of this.heapCensus?.declarations() ?? []) this.declare(decl);
@@ -5422,7 +5430,19 @@ export class LlEmitter {
     const hitFrom = B.currentLabel();
     B.br(answer);
     B.startBlock(extra);
-    const stored = this.partialViewExtra(objName, field);
+    const sourceCapable = this.shapeHost.recordViews?.sourceTargets.has(shapeId) === true;
+    let stored: string;
+    if (sourceCapable) {
+      this.declare(`declare ptr @scr_record_source_view_read(ptr, ptr, ${this.sizeType})`);
+      this.declare(`declare void @scr_dyn_release(ptr)`);
+      stored = B.tmp();
+      B.line(
+        `${stored} = call ptr @scr_record_source_view_read(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")})`,
+      );
+      this.emitPendingCheck(undefined, false, undefined, () =>
+        B.line(`call void @scr_dyn_release(ptr ${stored})`),
+      );
+    } else stored = this.partialViewExtra(objName, field);
     const absent = B.tmp();
     B.line(`${absent} = icmp eq ptr ${stored}, null`);
     const trap = B.newLabel("pf.absent");
@@ -5446,12 +5466,19 @@ export class LlEmitter {
     B.line(`store ptr ${this.cstr(field)}, ptr ${keyPtr}`);
     B.line(`${indexPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 2`);
     B.line(`store ${this.sizeType} 0, ptr ${indexPtr}`);
-    const helper = this.dyn.dynCheckHelper(type);
+    const helper = this.dyn.dynCheckHelper(type, false, sourceCapable);
     const ty = this.llType(type);
     const checked = B.tmp();
     B.line(
       `${checked} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${stored}, ptr ${path})`,
     );
+    if (sourceCapable) {
+      B.line(`call void @scr_dyn_release(ptr ${stored})`);
+      this.emitPendingCheck(undefined, false, undefined, () => {
+        if (isRefCounted(type))
+          B.line(`call void ${releaseSym(this.shapeHost, type)}(ptr ${checked})`);
+      });
+    }
     const convertFrom = B.currentLabel();
     B.br(answer);
     B.startBlock(answer);
@@ -5510,14 +5537,21 @@ export class LlEmitter {
     storeAt(addr);
     B.br(done);
     B.startBlock(extra);
-    const boxed = B.tmp();
-    const box = this.dyn.toDynHelper(type);
-    B.line(`${boxed} = call ptr @${box}(${this.llType(type)} ${value.name})`);
-    this.declare(`declare void @scr_record_view_extra_set(ptr, ptr, ${this.sizeType}, ptr)`);
+    const sourceCapable = this.shapeHost.recordViews?.sourceTargets.has(shapeId) === true;
+    let boxed: string;
+    if (sourceCapable) boxed = this.dyn.liveReadToDyn(B, type, value.name);
+    else {
+      boxed = B.tmp();
+      const box = this.dyn.toDynHelper(type);
+      B.line(`${boxed} = call ptr @${box}(${this.llType(type)} ${value.name})`);
+    }
+    const setter = sourceCapable ? "scr_record_source_view_set" : "scr_record_view_extra_set";
+    this.declare(`declare void @${setter}(ptr, ptr, ${this.sizeType}, ptr)`);
     B.line(
-      `call void @scr_record_view_extra_set(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")}, ptr ${boxed})`,
+      `call void @${setter}(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")}, ptr ${boxed})`,
     );
     released?.();
+    if (sourceCapable) this.emitPendingCheck();
     B.br(done);
     B.startBlock(done);
   }

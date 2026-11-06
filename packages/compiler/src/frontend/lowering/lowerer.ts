@@ -1,3 +1,4 @@
+import { sourceAssertionShapes } from "./source-record-views.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -15277,7 +15278,10 @@ export class Lowerer {
   recordFieldPresent(obj: IrExpr, shapeId: string, field: string, loc: SrcLoc): IrExpr {
     // A partial record view (partial-assertions.ts) can lack a field its
     // asserted literal never wrote, whatever the field's required type.
-    if (partialAssertionFields(this, shapeId).has(field))
+    if (
+      sourceAssertionShapes(this).has(shapeId) ||
+      partialAssertionFields(this, shapeId).has(field)
+    )
       return { kind: "recordHas", obj, shapeId, field, type: BOOL, loc };
     const f = this.shapes.get(shapeId)?.fields.find((x) => x.name === field);
     if (f && f.type.kind === "union" && this.armTag(f.type.unionId, UNDEFINED_T) >= 0) {

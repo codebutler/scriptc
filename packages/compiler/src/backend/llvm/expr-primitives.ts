@@ -378,6 +378,19 @@ export function emitOperatorExpr(
         const equal = e.op === "===" ? t : B.tmp();
         B.line(`${equal} = ${closureIdentityEqual(host, l.name, r.name)}`);
         if (e.op === "!==") B.line(`${t} = xor i1 ${equal}, true`);
+      } else if (
+        (e.op === "===" || e.op === "!==") &&
+        e.left.type.kind === "record" &&
+        e.right.type.kind === "record" &&
+        (host.shapeHost.recordViews?.sourceTargets.has(e.left.type.shapeId) ||
+          host.shapeHost.recordViews?.sourceTargets.has(e.right.type.shapeId))
+      ) {
+        host.declare(`declare ptr @scr_record_source_view_identity(ptr)`);
+        const left = B.tmp(),
+          right = B.tmp();
+        B.line(`${left} = call ptr @scr_record_source_view_identity(ptr ${l.name})`);
+        B.line(`${right} = call ptr @scr_record_source_view_identity(ptr ${r.name})`);
+        B.line(`${t} = icmp ${e.op === "===" ? "eq" : "ne"} ptr ${left}, ${right}`);
       } else if ((e.op === "===" || e.op === "!==") && host.llType(e.left.type) === "ptr") {
         // Reference identity (JS object equality) — closures, arrays,
         // records compared as pointers, exactly the C `==`.
@@ -1527,6 +1540,11 @@ export function emitRecordExpr(
         throw new InternalCompilerError("llvm emitter bug: recordClone of non-record type");
       host.recordCloneShapes.add(e.type.shapeId);
       const source = host.emitExpr(e.source);
+      if (host.shapeHost.recordViews?.sourceTargets.has(e.type.shapeId)) {
+        host.declare(`declare void @scr_record_source_view_refuse_clone(ptr)`);
+        B.line(`call void @scr_record_source_view_refuse_clone(ptr ${source.name})`);
+        host.emitPendingCheck();
+      }
       const rec = B.tmp();
       B.line(`${rec} = call ptr @${mangleRecordClone(e.type.shapeId)}(ptr ${source.name})`);
       const out = host.own({ name: rec, type: e.type });
@@ -1562,6 +1580,42 @@ export function emitRecordExpr(
       // Only a present field's slot may be looked up — a partial view's
       // absent field answers no slot at all (scr_record_view_slot), and has
       // the property only once a write left it in the view's extra store.
+      if (host.shapeHost.recordViews?.sourceTargets.has(e.shapeId)) {
+        // A source view keeps real own-property presence, including an
+        // explicitly present undefined value. Never read a getter here.
+        host.declare(`declare ptr @scr_record_source_view_source(ptr)`);
+        host.declare(`declare zeroext i1 @scr_record_source_view_has(ptr, ptr, ${host.sizeType})`);
+        const source = B.tmp(),
+          isSource = B.tmp();
+        B.line(`${source} = call ptr @scr_record_source_view_source(ptr ${obj.name})`);
+        B.line(`${isSource} = icmp ne ptr ${source}, null`);
+        const yes = B.newLabel("rh.source"),
+          no = B.newLabel("rh.native"),
+          done = B.newLabel("rh.result");
+        B.condBr(isSource, yes, no);
+        B.startBlock(yes);
+        const has = B.tmp();
+        B.line(
+          `${has} = call zeroext i1 @scr_record_source_view_has(ptr ${obj.name}, ptr ${host.cstr(e.field)}, ${host.sizeType} ${Buffer.byteLength(e.field, "utf8")})`,
+        );
+        B.br(done);
+        B.startBlock(no);
+        // Source-capable shapes cannot be native offset-view targets:
+        // their traced source edge excludes them from that planner.
+        const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+        let native = "true";
+        if (type.kind === "union" && undefinedArmTag(type, host.unionsById) >= 0) {
+          const absent = host.fieldAbsentTest(host.loadField(ptr, type, inline), type.unionId);
+          native = B.tmp();
+          B.line(`${native} = xor i1 ${absent}, true`);
+        }
+        const from = B.currentLabel();
+        B.br(done);
+        B.startBlock(done);
+        const result = B.tmp();
+        B.line(`${result} = phi i1 [ ${has}, %${yes} ], [ ${native}, %${from} ]`);
+        return { name: result, type: e.type };
+      }
       const position = host.recordsById.get(e.shapeId)!.fields.findIndex((f) => f.name === e.field);
       host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
       host.declare(`declare ptr @scr_record_view_extra(ptr, ptr, ${host.sizeType})`);

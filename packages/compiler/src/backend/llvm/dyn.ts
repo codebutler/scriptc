@@ -320,7 +320,7 @@ export class LlDyn {
       case "dyn.jsonParseHelper":
         return this.jsonParseHelper(args[0] as IrType)!;
       case "dyn.dynCheckHelper":
-        return this.dynCheckHelper(args[0] as IrType, args[1] as boolean);
+        return this.dynCheckHelper(args[0] as IrType, args[1] as boolean, args[2] === true);
       case "dyn.toDynHelper":
         return this.toDynHelper(args[0] as IrType);
       case "dyn.promiseDynAdapterHelper":
@@ -2175,15 +2175,16 @@ export class LlDyn {
     return name;
   }
 
-  dynCheckHelper(t: IrType, preserveRefs = false): string {
+  dynCheckHelper(t: IrType, preserveRefs = false, sourceView = false): string {
+    sourceView = sourceView || (!preserveRefs && this.sourceViewType(t));
     // A `(T | undefined)[]` stored as T elements also takes undefined ones.
     const key = checkedConversionKey(t);
-    const builderKey = preserveRefs ? `identity:${key}` : key;
+    const builderKey = sourceView ? `source:${key}` : preserveRefs ? `identity:${key}` : key;
     const existing = this.dynBuilders.get(builderKey);
     if (existing) return existing;
     const name = `sc_dc_${this.dynBuilders.size}`;
     this.dynBuilders.set(builderKey, name);
-    this.host.journalAllocated?.(name, "dyn.dynCheckHelper", [t, preserveRefs]);
+    this.host.journalAllocated?.(name, "dyn.dynCheckHelper", [t, preserveRefs, sourceView]);
     const recursive = this.isRecursiveShape(t);
     const memo = !recursive && this.holdsRecursiveShape(t) && this.valTy(t) === "ptr";
     const host = this.host;
@@ -2324,7 +2325,7 @@ export class LlDyn {
         );
         B.terminate(`ret ${dummy}`);
         B.startBlock(plain);
-      } else if (t.kind !== "union") {
+      } else if (t.kind !== "union" && !(sourceView && t.kind === "record")) {
         const view = this.viewFn(recursive || memo);
         host.declare(`declare ptr @scr_dyn_typed_ref_cached_cast(ptr, ptr, ${host.sizeType})`);
         host.declare(
@@ -2752,6 +2753,54 @@ export class LlDyn {
           if (host.inlineUnions.record(ft))
             B.line(`call void ${releaseSym(host, ft)}(ptr ${value})`);
         };
+        if (sourceView) {
+          if (!host.recordViews?.sourceTargets.has(t.shapeId)) {
+            B.line(
+              `call void @scr_dyn_check_fail(ptr %path, ptr ${host.cstr("supported fixed-record structural view layout")}, ptr %d)`,
+            );
+            B.terminate(`ret ptr null`);
+            break;
+          }
+          this.keepsRecordSources = true;
+          host.declare(`declare ptr @scr_dyn_source_record_view(ptr, ptr, ptr)`);
+          host.declare(`declare ptr @scr_dyn_source_record_read(ptr, ptr, ${host.sizeType}, ptr)`);
+          host.declare(`declare void @scr_dyn_release(ptr)`);
+          B.line(
+            `%r0 = call ptr @scr_dyn_source_record_view(ptr %d, ptr @${mangleRecordNew(t.shapeId)}, ptr %path)`,
+          );
+          this.pendingBail(B, "dcsv.alloc", () => {}, "ptr null");
+          const rc = vAdapters(host, t);
+          host.declare(`declare void @scr_dyn_build_hold(ptr, ptr, ptr)`);
+          B.line(`call void @scr_dyn_build_hold(ptr %r0, ptr ${rc.retain}, ptr ${rc.release})`);
+          if (recursive) this.recordBuilt(B, name, "%r0");
+          for (const field of shape.fields) {
+            if (field.name === KEY_ORDER_FIELD) continue;
+            setPath(field.name, "0");
+            const member = B.tmp();
+            B.line(
+              `${member} = call ptr @scr_dyn_source_record_read(ptr %d, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${pathSlot})`,
+            );
+            this.pendingBail(
+              B,
+              "dcsv.read",
+              () => {
+                B.line(`call void @scr_dyn_release(ptr ${member})`);
+                releaseR();
+              },
+              "ptr null",
+            );
+            const checked = B.tmp();
+            B.line(
+              `${checked} = call ${this.valTy(field.type)} @${this.dynCheckHelper(field.type, preserveRefs, true)}(ptr ${member}, ptr ${pathSlot})`,
+            );
+            B.line(`call void @scr_dyn_release(ptr ${member})`);
+            if (isRefCounted(field.type))
+              B.line(`call void ${releaseSym(host, field.type)}(ptr ${checked})`);
+            this.pendingBail(B, "dcsv.check", releaseR, "ptr null");
+          }
+          B.terminate(`ret ptr %r0`);
+          break;
+        }
         // Tuple targets: a JSON ARRAY of exactly the arity.
         if (shape.tuple) {
           const byIndex = [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name));
@@ -2775,7 +2824,7 @@ export class LlDyn {
             const e = this.itemAt(B, items, `${i}`);
             const v = B.tmp();
             B.line(
-              `${v} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs)}(ptr ${e}, ptr ${pathSlot})`,
+              `${v} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs, sourceView)}(ptr ${e}, ptr ${pathSlot})`,
             );
             storeInto(f.name, f.type, v);
             releaseInline(f.type, v);
@@ -2837,7 +2886,7 @@ export class LlDyn {
           setPath(f.name, "0");
           const value = B.tmp();
           B.line(
-            `${value} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs)}(ptr ${m}, ptr ${pathSlot})`,
+            `${value} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs, sourceView)}(ptr ${m}, ptr ${pathSlot})`,
           );
           B.line(`call void @${release}(ptr ${m})`);
           storeInto(f.name, f.type, value);
@@ -2970,6 +3019,13 @@ export class LlDyn {
         break;
       }
       case "array": {
+        if (sourceView) {
+          B.line(
+            `call void @scr_dyn_check_fail(ptr %path, ptr ${host.cstr("record field without an array structural conversion")}, ptr %d)`,
+          );
+          B.terminate(`ret ptr null`);
+          break;
+        }
         const elem = t.elem;
         const c = this.dynCheckHelper(elem, preserveRefs);
         requireKind(DYN_KIND.ARR, "dca");
@@ -3076,7 +3132,7 @@ export class LlDyn {
             const x = B.tmp();
             const u = B.tmp();
             B.line(
-              `${x} = call double @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+              `${x} = call double @${this.dynCheckHelper(arm, preserveRefs, sourceView)}(ptr %d, ptr %path)`,
             );
             B.line(`${u} = call ptr @scr_union_new_f64(i32 ${i}, double ${x})`);
             B.terminate(`ret ptr ${u}`);
@@ -3085,7 +3141,7 @@ export class LlDyn {
             const x = B.tmp();
             const u = B.tmp();
             B.line(
-              `${x} = call zeroext i1 @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+              `${x} = call zeroext i1 @${this.dynCheckHelper(arm, preserveRefs, sourceView)}(ptr %d, ptr %path)`,
             );
             B.line(`${u} = call ptr @scr_union_new_bool(i32 ${i}, i1 ${x})`);
             B.terminate(`ret ptr ${u}`);
@@ -3094,7 +3150,7 @@ export class LlDyn {
             const x = B.tmp();
             trustedCall(() =>
               B.line(
-                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs, sourceView)}(ptr %d, ptr %path)`,
               ),
             );
             B.terminate(`ret ptr ${x}`);
@@ -3105,7 +3161,7 @@ export class LlDyn {
             const u = B.tmp();
             trustedCall(() =>
               B.line(
-                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs, sourceView)}(ptr %d, ptr %path)`,
               ),
             );
             B.line(
@@ -3114,8 +3170,38 @@ export class LlDyn {
             B.terminate(`ret ptr ${u}`);
           }
         };
-        const order = this.unionArmOrder(def);
-        const values = this.dispatchValues(def);
+        let sourceRecordArm = -1;
+        if (sourceView && def.arms.some((arm) => arm.kind === "record")) {
+          const records = def.arms.filter((arm) => arm.kind === "record");
+          const disjoint = def.arms.every((arm) =>
+            ["record", "undefinedT", "nullT", "f64", "bool", "string", "bigint", "func"].includes(
+              arm.kind,
+            ),
+          );
+          if (records.length !== 1 || !disjoint) {
+            B.line(
+              `call void @scr_dyn_check_fail(ptr %path, ptr ${host.cstr("one record arm with disjoint primitive or function arms for a structural view")}, ptr %d)`,
+            );
+            B.terminate(`ret ptr null`);
+            break;
+          }
+          sourceRecordArm = def.arms.indexOf(records[0]!);
+          const kind = this.kindOf(B, "%d");
+          const object = B.tmp(),
+            capsule = B.tmp(),
+            selected = B.tmp();
+          B.line(`${object} = icmp eq i32 ${kind}, ${DYN_KIND.OBJ}`);
+          B.line(`${capsule} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
+          B.line(`${selected} = or i1 ${object}, ${capsule}`);
+          const hit = B.newLabel("dcsv.record"),
+            next = B.newLabel("dcsv.other");
+          B.condBr(selected, hit, next);
+          B.startBlock(hit);
+          build(sourceRecordArm);
+          B.startBlock(next);
+        }
+        const order = this.unionArmOrder(def).filter((index) => index !== sourceRecordArm);
+        const values = sourceRecordArm >= 0 ? null : this.dispatchValues(def);
         if (values !== null) {
           const hits = def.arms.map(() => B.newLabel("dcu.h"));
           const unmatched = B.newLabel("dcu.n");
@@ -3144,9 +3230,9 @@ export class LlDyn {
             build(i);
             B.startBlock(lNext);
           }
-        if (preserveRefs) {
+        if (preserveRefs || sourceRecordArm >= 0) {
           B.line(
-            `call void @scr_dyn_check_fail(ptr %path, ptr ${host.cstr("reference with its original layout")}, ptr %d)`,
+            `call void @scr_dyn_check_fail(ptr %path, ptr ${sourceRecordArm >= 0 ? want : host.cstr("reference with its original layout")}, ptr %d)`,
           );
           B.terminate(`ret ptr null`);
           break;
@@ -3684,6 +3770,22 @@ export class LlDyn {
         const shape = host.recordsById.get(t.shapeId);
         if (!shape)
           throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
+        if (host.recordViews?.sourceTargets.has(t.shapeId)) {
+          host.declare(`declare ptr @scr_record_source_view_source(ptr)`);
+          host.declare(`declare ptr @scr_dyn_retain(ptr)`);
+          const source = B.tmp(),
+            present = B.tmp();
+          B.line(`${source} = call ptr @scr_record_source_view_source(ptr %v)`);
+          B.line(`${present} = icmp ne ptr ${source}, null`);
+          const yes = B.newLabel("td.source"),
+            no = B.newLabel("td.native");
+          B.condBr(present, yes, no);
+          B.startBlock(yes);
+          const owned = B.tmp();
+          B.line(`${owned} = call ptr @scr_dyn_retain(ptr ${source})`);
+          B.terminate(`ret ptr ${owned}`);
+          B.startBlock(no);
+        }
         const codec = recordHandleCodecClass(shape);
         if (codec !== null) {
           this.textCodecToDyn(B, t, shape, codec);
@@ -5462,6 +5564,20 @@ export class LlDyn {
     return r;
   }
 
+  /** A callback crossing back into an admitted API graph must retain the
+   * same source objects as the assertion that exposed the callback. */
+  private sourceViewType(type: IrType): boolean {
+    if (this.host.declBoundary?.() === true) return false;
+    if (type.kind === "record")
+      return this.host.recordViews?.sourceTargets.has(type.shapeId) === true;
+    if (type.kind === "union")
+      return (
+        this.host.unionsById.get(type.unionId)?.arms.some((arm) => this.sourceViewType(arm)) ??
+        false
+      );
+    return false;
+  }
+
   /** The call thunk for one closure signature: validate each dyn arg
    * into the declared param type, call through the closure, convert the
    * result back to a dyn value (+1). */
@@ -5512,7 +5628,9 @@ export class LlDyn {
       if (typedRest && i === t.params.length - 1) {
         const packed = packTail(i);
         const a = B.tmp();
-        B.line(`${a} = call ${this.valTy(p)} @${this.dynCheckHelper(p)}(ptr ${packed}, ptr null)`);
+        B.line(
+          `${a} = call ${this.valTy(p)} @${this.dynCheckHelper(p, false, this.sourceViewType(p))}(ptr ${packed}, ptr null)`,
+        );
         host.declare(`declare void @scr_dyn_release(ptr)`);
         B.line(`call void @scr_dyn_release(ptr ${packed})`);
         this.pendingBail(
@@ -5567,7 +5685,7 @@ export class LlDyn {
         B.line(`store ${host.sizeType} ${i}, ptr ${ip}`);
         const a = B.tmp();
         B.line(
-          `${a} = call ${this.valTy(p)} @${this.dynCheckHelper(p)}(ptr ${ad}, ptr ${pathSlot})`,
+          `${a} = call ${this.valTy(p)} @${this.dynCheckHelper(p, false, this.sourceViewType(p))}(ptr ${ad}, ptr ${pathSlot})`,
         );
         this.pendingBail(
           B,
@@ -6237,7 +6355,9 @@ export class LlDyn {
       if (!t.argumentsAll) B.line(`${packed} = call ptr @scr_dyn_new_arr()`);
       t.params.forEach((p, i) => {
         if (!t.argumentsAll) {
-          const v = this.toDynExpr(B, p, `%a${i}`);
+          const v = this.sourceViewType(p)
+            ? this.liveReadToDyn(B, p, `%a${i}`)
+            : this.toDynExpr(B, p, `%a${i}`);
           B.line(`call void @scr_dyn_arr_push(ptr ${packed}, ptr ${v})`);
         }
         if (isRefCounted(p)) B.line(`call void ${releaseSym(host, p)}(ptr %a${i})`);
@@ -6252,7 +6372,9 @@ export class LlDyn {
       const arr = B.slot();
       B.entryAllocas.push(`${arr} = alloca [${t.params.length} x ptr]`);
       t.params.forEach((p, i) => {
-        const v = this.toDynExpr(B, p, `%a${i}`);
+        const v = this.sourceViewType(p)
+          ? this.liveReadToDyn(B, p, `%a${i}`)
+          : this.toDynExpr(B, p, `%a${i}`);
         argVals.push(v);
         const slotp = B.tmp();
         B.line(
@@ -6288,7 +6410,7 @@ export class LlDyn {
       // wrapper throws the catchable TypeError here (path "$").
       const out = B.tmp();
       B.line(
-        `${out} = call ${this.valTy(t.ret)} @${this.dynCheckHelper(t.ret)}(ptr ${r}, ptr null)`,
+        `${out} = call ${this.valTy(t.ret)} @${this.dynCheckHelper(t.ret, false, this.sourceViewType(t.ret))}(ptr ${r}, ptr null)`,
       );
       B.line(`call void @scr_dyn_release(ptr ${r})`);
       B.terminate(`ret ${this.valTy(t.ret)} ${out}`);

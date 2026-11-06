@@ -1,5 +1,6 @@
 /* Type narrowing of lowered values, conditional and as-expressions, and runtime-optional receiver reads. */
 import { declBoundaryOrigin } from "../../decl-projection.js";
+import { recordGraphHasFunction } from "../../../ir/source-record-views.js";
 import {
   isWebStreamMemberInJavaScript,
   typeInvolvesWebStream,
@@ -2112,6 +2113,14 @@ function adoptingCast(
           kind: "dynCheck",
           value: varRef(source.id, DYN, loc),
           ...(boundary ? { adopt: true as const } : {}),
+          ...(!boundary &&
+          recordGraphHasFunction(
+            target,
+            (id) => lowerer.shapes.get(id),
+            (id) => lowerer.unions.get(id),
+          )
+            ? { partialView: true as const }
+            : {}),
           type: target,
           loc,
           ...(originId === undefined ? {} : { origin: originId }),

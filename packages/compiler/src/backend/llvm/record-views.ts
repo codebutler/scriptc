@@ -38,11 +38,14 @@ import {
   type IrType,
 } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
+import { sourceRecordViewTargets } from "../../ir/source-record-views.js";
 import type { BlockBuilder } from "./blocks.js";
 
 export interface RecordViews {
   /** Shape ids whose values may be views. */
   readonly targets: ReadonlySet<string>;
+  /** Targets backed by the original dynamic object rather than native offsets. */
+  readonly sourceTargets: ReadonlySet<string>;
   /** The record shapes whose capsules convert to a view of `target`. */
   sources(target: string): readonly string[];
   /** Whether `target` may be a PARTIAL view of `source`: some of its
@@ -62,6 +65,7 @@ export const PARTIAL_VIEW_ABSENT =
 
 export const NO_RECORD_VIEWS: RecordViews = {
   targets: new Set(),
+  sourceTargets: new Set(),
   sources: () => [],
   partial: () => false,
   partialTargets: new Set(),
@@ -219,7 +223,23 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
         return true;
       },
     });
-  if ((checked.length === 0 || boxed.length === 0) && partialPairs.length === 0)
+  const requestedSources = sourceRecordViewTargets(mod);
+  const sourceTargets = new Set(
+    [...requestedSources].filter((id) => {
+      const shape = shapes.get(id);
+      return (
+        shape !== undefined &&
+        plainShape(shape) &&
+        shape.freezable !== true &&
+        !options.excluded(id)
+      );
+    }),
+  );
+  if (
+    (checked.length === 0 || boxed.length === 0) &&
+    partialPairs.length === 0 &&
+    sourceTargets.size === 0
+  )
     return NO_RECORD_VIEWS;
   const reachable = closure(checked);
   const live = closure(boxed);
@@ -282,8 +302,8 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
       if (partial.size === 0) partials.delete(id);
     }
   }
-  if (sources.size === 0) return NO_RECORD_VIEWS;
-  const targets = new Set(sources.keys());
+  if (sources.size === 0 && sourceTargets.size === 0) return NO_RECORD_VIEWS;
+  const targets = new Set([...sources.keys(), ...sourceTargets]);
   // The target fields some partial source lacks: their presence test is a
   // runtime view probe, and their slot lookup traps.
   const missing = new Map<string, Set<string>>();
@@ -297,11 +317,14 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
     }
     missing.set(id, absent);
   }
+  for (const id of sourceTargets)
+    missing.set(id, new Set(shapes.get(id)?.fields.map((field) => field.name) ?? []));
   return {
     targets,
+    sourceTargets,
     sources: (target) => sources.get(target) ?? [],
     partial: (target, source) => partials.get(target)?.has(source) === true,
-    partialTargets: new Set(partials.keys()),
+    partialTargets: new Set([...partials.keys(), ...sourceTargets]),
     partialMissing: (target, field) => missing.get(target)?.has(field) === true,
   };
 }
