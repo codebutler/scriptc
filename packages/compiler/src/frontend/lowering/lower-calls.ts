@@ -2529,7 +2529,13 @@ function lowerCallThroughValueRaw(
     const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
     return { kind: "dynCall", callee: boxed, calleeName, args, type: DYN, loc };
   }
-  const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
+  const erasedVoid =
+    isGenericCallableMemberType(lowerer.typeOf(expr.expression), lowerer.checker) &&
+    lowerer.irTypeOf(expr).kind === "void" &&
+    discardedCallResult(expr);
+  const args = erasedVoid
+    ? discardedGenericVoidArgs(lowerer, expr, callee.type)
+    : completeFuncValueArgs(lowerer, expr, callee.type, loc);
   return { kind: "callValue", callee, args, type: callee.type.ret, loc };
 }
 
@@ -10808,13 +10814,22 @@ export function lowerRecordFieldCall(
       boxedResult = lowerer.coerceInto(call, boxedResult, resolved);
     return boxedResult;
   }
+  const memberType = lowerer.typeOf(access);
+  const erasedVoid =
+    isGenericCallableMemberType(memberType, lowerer.checker) &&
+    lowerer.irTypeOf(call).kind === "void";
   if (hasOptionalTupleSpreads(lowerer, call)) {
+    if (erasedVoid)
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "optional-tuple spreads into void-instantiated generic record calls",
+      );
     const spread = lowerSpreadArgsCall(lowerer, call, callee, loc);
     if (spread?.kind === "dynCall") {
       let result: IrExpr = receiver ? { ...spread, receiver } : spread;
       if (callee.type.ret.kind !== "void")
         result = lowerer.coerceInto(call, result, callee.type.ret);
-      const memberType = lowerer.typeOf(access);
       if (isGenericCallableMemberType(memberType, lowerer.checker)) {
         const resolved = lowerer.irTypeOf(call);
         if (resolved.kind !== "void") result = lowerer.coerceInto(call, result, resolved);
@@ -10825,7 +10840,9 @@ export function lowerRecordFieldCall(
       return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
     }
   }
-  const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
+  const args = erasedVoid
+    ? discardedGenericVoidArgs(lowerer, call, callee.type)
+    : completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
   let result: IrExpr = {
     kind: "callValue",
     callee,
@@ -10837,12 +10854,78 @@ export function lowerRecordFieldCall(
   // A generic member's field holds its erased instance, and an overloaded
   // member's field its erased function (the overloads joined): the result
   // converts to this call's instantiated or resolved return type.
-  const memberType = lowerer.typeOf(access);
-  if (isGenericCallableMemberType(memberType, lowerer.checker))
-    result = lowerer.coerceInto(call, result, lowerer.irTypeOf(call));
-  else if (isOverloadedMemberAccess(lowerer, access))
+  if (isGenericCallableMemberType(memberType, lowerer.checker)) {
+    const resolved = lowerer.irTypeOf(call);
+    // A void signature does not erase JavaScript's actual return value.
+    // Keep the erased result, as the rest-call lanes above already do.
+    if (resolved.kind !== "void") result = lowerer.coerceInto(call, result, resolved);
+  } else if (isOverloadedMemberAccess(lowerer, access))
     result = lowerer.coerceInto(call, result, resolvedOverloadResultType(lowerer, call));
   return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
+}
+
+function discardedCallResult(call: ts.CallExpression): boolean {
+  let use: ts.Node = call;
+  while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+  return ts.isExpressionStatement(use.parent);
+}
+
+/** Keep this admission local to calls whose result the program discards.
+ * Stored void values and already-erased void callbacks need their own ABI. */
+function discardedGenericVoidArgs(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  funcType: IrType & { kind: "func" },
+): IrExpr[] {
+  if (!discardedCallResult(call))
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      "observing a void-instantiated generic record call's result",
+    );
+  const overrides: { node: ts.Node; previous: IrType | undefined }[] = [];
+  try {
+    for (const argument of call.arguments.nodes) {
+      let node = argument;
+      while (ts.isParenthesizedExpression(node) || ts.isSatisfiesExpression(node))
+        node = node.expression;
+      const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(node));
+      const contextual =
+        ts.isArrowFunction(node) || ts.isFunctionExpression(node)
+          ? lowerer.checker.getContextualType(node)
+          : undefined;
+      const contextualSignatures = contextual
+        ? lowerer.checker.getCallSignatures(contextual)
+        : signatures;
+      if (
+        contextualSignatures.length !== 1 ||
+        !(
+          lowerer.checker.getReturnTypeOfSignature(contextualSignatures[0]!).flags &
+          ts.TypeFlags.Void
+        )
+      )
+        continue;
+      if (
+        !(ts.isArrowFunction(node) || ts.isFunctionExpression(node)) ||
+        node.type ||
+        node.asteriskToken ||
+        node.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+      )
+        lowerer.unsupported(
+          "SC1090",
+          argument,
+          "passing an existing void callback to an erased generic record call",
+        );
+      overrides.push({ node, previous: lowerer.contextualFunctionReturns.get(node) });
+      lowerer.contextualFunctionReturns.set(node, DYN);
+    }
+    return completeFuncValueArgs(lowerer, call, funcType, locOf(call));
+  } finally {
+    for (const { node, previous } of overrides) {
+      if (previous === undefined) lowerer.contextualFunctionReturns.delete(node);
+      else lowerer.contextualFunctionReturns.set(node, previous);
+    }
+  }
 }
 
 /** `o.m(args)` where `m` is an object-literal GENERIC method (own type
