@@ -23,21 +23,37 @@
  */
 #include "scr_runtime.h"
 #include "scr_key.h"
+#include <stdio.h>
 
 
 static SCR_TL ScrDyn *scr_builtin_object_prototype;
 
 const ScrDateClassHooks *scr_date_class_hooks = NULL;
 
-/* The checked-dynamic Error.prototype (scr_dyn_error_prototype) is not the
- * prototype of scriptc's Error instances, so a change to it would not reach
- * them: every mutation throws. */
+/* Native Error fields still use their compiled accessors. Prototype
+ * mutation cannot update those accessors, so every family keeps the
+ * explicit mutation boundary even though reflection shares its identity. */
 static SCR_TL ScrDyn *scr_builtin_error_prototype;
+static const char *const scr_error_ctor_names[SCR_ERR_COUNT] = {
+    [SCR_ERR_ERROR] = "Error", [SCR_ERR_TYPE] = "TypeError",
+    [SCR_ERR_RANGE] = "RangeError", [SCR_ERR_SYNTAX] = "SyntaxError",
+    [SCR_ERR_REFERENCE] = "ReferenceError", [SCR_ERR_EVAL] = "EvalError",
+    [SCR_ERR_URI] = "URIError", [SCR_ERR_AGGREGATE] = "AggregateError",
+    [SCR_ERR_SUPPRESSED] = "SuppressedError",
+};
+#define SCR_ERROR_CTORS SCR_ERR_COUNT
+static SCR_TL ScrDyn *scr_error_prototypes[SCR_ERROR_CTORS];
 static bool scr_dyn_error_prototype_fence(const ScrDyn *value) {
-  if (!value || value != scr_builtin_error_prototype) return false;
-  static const char message[] = "Error.prototype mutation is not supported yet";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-  return true;
+  if (!value) return false;
+  for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
+    if (value != scr_error_prototypes[i]) continue;
+    char message[128];
+    int length = snprintf(message, sizeof message, "%s.prototype mutation is not supported yet",
+                          scr_error_ctor_names[i]);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, "SC2020");
+    return true;
+  }
+  return false;
 }
 
 SCR_TL const ScrHandleStreamHooks *scr_handle_stream_hooks = NULL;
@@ -65,7 +81,6 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 }
 
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -828,7 +843,10 @@ bool scr_dyn_is_object_prototype(const ScrDyn *d) {
 }
 
 bool scr_dyn_is_error_prototype(const ScrDyn *d) {
-  return d && d == scr_builtin_error_prototype;
+  if (!d) return false;
+  for (size_t i = 0; i < SCR_ERROR_CTORS; i++)
+    if (d == scr_error_prototypes[i]) return true;
+  return false;
 }
 
 bool scr_dyn_array_prototype_element_fence(const ScrDyn *recv) {
@@ -2468,19 +2486,31 @@ static void scr_builtin_object_prototype_cleanup(void) {
  * indexed like scr_error_vts, with the constructor's name and length.
  * Calling one through the value is not supported yet, as for the other
  * interned constructors (scr_dyn_global_constructor). */
-static const char *const scr_error_ctor_names[] = {
-    "Error", "TypeError", "RangeError", "SyntaxError", NULL,
-    "ReferenceError", "EvalError", "URIError", "AggregateError",
-};
-#define SCR_ERROR_CTORS (sizeof scr_error_ctor_names / sizeof scr_error_ctor_names[0])
 static SCR_TL ScrDyn *scr_error_ctor_values[SCR_ERROR_CTORS];
 static SCR_TL bool scr_error_ctors_registered;
 
+static ScrDyn *scr_error_prototype_at(size_t index);
+
 static void scr_error_ctors_cleanup(void) {
+  /* Break the canonical constructor <-> prototype cycles while both caches
+   * still own every participant. Property tables also hold the constructor
+   * inheritance links. No user code runs while those tables are released. */
+  for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
+    if (!scr_error_ctor_values[i]) continue;
+    ScrClosure *owner = scr_closure_identity(scr_error_ctor_values[i]->v.fn.clo);
+    ScrBox *properties = owner->props;
+    owner->props = NULL;
+    scr_box_release(properties);
+  }
   for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
     scr_dyn_release(scr_error_ctor_values[i]);
     scr_error_ctor_values[i] = NULL;
   }
+  for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
+    scr_dyn_release(scr_error_prototypes[i]);
+    scr_error_prototypes[i] = NULL;
+  }
+  scr_builtin_error_prototype = NULL;
 }
 
 static ScrDyn *scr_error_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
@@ -2505,12 +2535,16 @@ ScrDyn *scr_dyn_error_constructor(const char *name) {
       scr_atexit(scr_error_ctors_cleanup);
     }
     if (!scr_error_ctor_values[i]) {
-      uint32_t length = strcmp(name, "AggregateError") == 0 ? 2 : 1;
+      uint32_t length = i == SCR_ERR_AGGREGATE ? 2 : i == SCR_ERR_SUPPRESSED ? 3 : 1;
       scr_error_ctor_values[i] =
           scr_dyn_new_func(scr_closure_new((void *)scr_error_ctor_names[i], 0), scr_error_ctor_call, length,
                            "native:constructor", scr_error_ctor_names[i]);
-      /* Error.prototype is modeled; the other error prototypes are not. */
-      if (i == 0) scr_dyn_fn_seed_prototype(scr_error_ctor_values[i], scr_dyn_error_prototype());
+      scr_dyn_fn_seed_prototype(scr_error_ctor_values[i], scr_error_prototype_at(i));
+      if (i != SCR_ERR_ERROR) {
+        ScrDyn *table = scr_dyn_fn_properties(scr_error_ctor_values[i]);
+        table->prototype = scr_dyn_error_constructor("Error");
+        scr_dyn_release(table);
+      }
     }
     return scr_dyn_retain(scr_error_ctor_values[i]);
   }
@@ -2553,28 +2587,24 @@ ScrDyn *scr_dyn_array_prototype_base(void) {
   return scr_dyn_retain(scr_builtin_array_prototype);
 }
 
-/* Error.prototype as a checked-dynamic object, for JavaScript constructor
- * functions that inherit from it (`F.prototype =
- * Object.create(Error.prototype)`): non-enumerable `constructor`, `name`
- * ("Error"), `message` ("") and `toString`, on Object.prototype. The Error
- * constructor has no checked-dynamic value, so `constructor` is a function
- * named Error that throws when called. */
+/* Canonical Error-family prototypes: every constructor and prototype
+ * refers back to the same cached value. Derived families inherit the base
+ * Error prototype's toString; each owns constructor, name and message. */
 static const ScrDyn *scr_dyn_proto_next(const ScrDyn *object);
-static void scr_builtin_error_prototype_cleanup(void) {
-  ScrDyn *prototype = scr_builtin_error_prototype;
-  scr_builtin_error_prototype = NULL;
-  scr_dyn_release(prototype);
-}
 static ScrDyn *scr_error_prototype_to_string(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure; (void)args; (void)argc;
   ScrDyn *self = scr_dyn_this_get();
   ScrDyn *result = NULL;
-  if (self->kind == SCR_DYN_OBJ || self->kind == SCR_DYN_ARR || self->kind == SCR_DYN_FUNC) {
+  if (self->kind == SCR_DYN_OBJ || self->kind == SCR_DYN_ARR || self->kind == SCR_DYN_FUNC ||
+      self->kind == SCR_DYN_TYPED_REF) {
     ScrStr *text = scr_dyn_error_string(self);
     if (text) {
       result = scr_dyn_new_str(text);
       scr_str_release(text);
     }
+  } else if (scr_dyn_to_primitive_result_is_object(self)) {
+    static const char message[] = "Error.prototype.toString on this native object is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   } else {
     ScrJsonBuf message;
     scr_jb_init(&message);
@@ -2590,23 +2620,21 @@ static ScrDyn *scr_error_prototype_to_string(ScrClosure *closure, ScrDyn *const 
   scr_dyn_release(self);
   return result;
 }
-static ScrDyn *scr_error_prototype_constructor(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  (void)closure; (void)args; (void)argc;
-  static const char message[] = "calling Error.prototype.constructor is not supported yet";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-  return NULL;
-}
 static void scr_error_prototype_hide(ScrDyn *object, const char *key, size_t key_len) {
   ScrDynEntry *entry = scr_dyn_find_entry(object, key, key_len);
   entry->enumerable = false;
 }
-ScrDyn *scr_dyn_error_prototype(void) {
-  if (!scr_builtin_error_prototype) {
+static ScrDyn *scr_error_prototype_at(size_t index) {
+  if (!scr_error_prototypes[index]) {
     ScrDyn *prototype = scr_dyn_alloc(SCR_DYN_OBJ);
-    scr_dyn_obj_set(prototype, "constructor", 11,
-        scr_dyn_new_func(scr_closure_new(NULL, 0), scr_error_prototype_constructor, 1, "native:Error", "Error"));
+    /* Publish first: the constructor seeds its prototype with this object
+     * and the prototype stores that same constructor, whichever is read first. */
+    scr_error_prototypes[index] = prototype;
+    if (index == SCR_ERR_ERROR) scr_builtin_error_prototype = prototype;
+    else prototype->prototype = scr_error_prototype_at(SCR_ERR_ERROR);
+    scr_dyn_obj_set(prototype, "constructor", 11, scr_dyn_error_constructor(scr_error_ctor_names[index]));
     scr_error_prototype_hide(prototype, "constructor", 11);
-    ScrStr *name = scr_str_new("Error", 5);
+    ScrStr *name = scr_str_new(scr_error_ctor_names[index], strlen(scr_error_ctor_names[index]));
     scr_dyn_obj_set(prototype, "name", 4, scr_dyn_new_str(name));
     scr_str_release(name);
     scr_error_prototype_hide(prototype, "name", 4);
@@ -2614,13 +2642,23 @@ ScrDyn *scr_dyn_error_prototype(void) {
     scr_dyn_obj_set(prototype, "message", 7, scr_dyn_new_str(empty));
     scr_str_release(empty);
     scr_error_prototype_hide(prototype, "message", 7);
-    scr_dyn_obj_set(prototype, "toString", 8,
-        scr_dyn_new_func(scr_closure_new(NULL, 0), scr_error_prototype_to_string, 0, "native:Error", "toString"));
-    scr_error_prototype_hide(prototype, "toString", 8);
-    scr_builtin_error_prototype = prototype;
-    scr_atexit(scr_builtin_error_prototype_cleanup);
+    if (index == SCR_ERR_ERROR) {
+      scr_dyn_obj_set(prototype, "toString", 8,
+          scr_dyn_new_func(scr_closure_new(NULL, 0), scr_error_prototype_to_string, 0, "native:Error", "toString"));
+      scr_error_prototype_hide(prototype, "toString", 8);
+    }
   }
-  return scr_dyn_retain(scr_builtin_error_prototype);
+  return scr_dyn_retain(scr_error_prototypes[index]);
+}
+
+ScrDyn *scr_dyn_error_prototype(void) { return scr_error_prototype_at(SCR_ERR_ERROR); }
+
+ScrDyn *scr_dyn_error_family_prototype(const ScrStr *name) {
+  for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
+    if (scr_error_ctor_names[i] && strcmp(name->data, scr_error_ctor_names[i]) == 0)
+      return scr_error_prototype_at(i);
+  }
+  return NULL;
 }
 
 /* Error.captureStackTrace called through its function value. The
@@ -2771,11 +2809,14 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
   return object;
 }
 
-static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
+static int scr_dyn_error_view_prototype_kind(const ScrDyn *object);
 
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
-  if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
+  if (object->kind == SCR_DYN_OBJ) {
+    int kind = scr_dyn_error_view_prototype_kind(object);
+    if (kind >= 0) return scr_error_prototype_at((size_t)kind);
+  }
   if (scr_dyn_class_reflection_fence(object)) return NULL;
   if (object->kind == SCR_DYN_TYPED_REF && strncmp(object->v.typed_ref.type_key, "object:", 7)) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
@@ -6210,7 +6251,7 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
    * objects inheriting Error.prototype. */
   for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
     if (!scr_error_ctor_values[i] || callee->v.fn.clo != scr_error_ctor_values[i]->v.fn.clo) continue;
-    return scr_dyn_err_instanceof(value, (double)i) || (i == 0 && scr_dyn_inherits_error_prototype(value));
+    return scr_dyn_err_instanceof(value, (double)i);
   }
   if (scr_array_buffer_ctor && callee->v.fn.clo == scr_array_buffer_ctor->v.fn.clo) return scr_array_buffer_is(value);
   if (scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo) return value->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(value);
@@ -11657,17 +11698,19 @@ static void scr_error_dyn_add_stack(ScrDyn *d) {
   entry->enumerable = false;
 }
 
-/* Whether `object` is the view scr_error_dyn_fields built for an error
- * created as an Error (not a subclass or another error kind) and its
- * prototype is still the one the view started with. Such an error's
- * prototype is Error.prototype. */
-static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object) {
-  if (object->null_proto) return false;
+/* The exact native Error family's vtable identifies its canonical
+ * prototype. A view with a replaced prototype, or a user subclass, retains
+ * its own reflection path; mutable name strings never decide the family. */
+static int scr_dyn_error_view_prototype_kind(const ScrDyn *object) {
+  if (object->null_proto) return -1;
   size_t hit = scr_errdyn_find(object, false);
-  if (hit == SIZE_MAX) return false;
+  if (hit == SIZE_MAX) return -1;
   const ScrErrDynEnt *ent = &scr_errdyn_cache[hit];
-  return ent->fields_view && object->prototype == ent->view_prototype &&
-         ent->err->vt == &scr_error_vts[SCR_ERR_ERROR];
+  if (!ent->fields_view || object->prototype != ent->view_prototype) return -1;
+  for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
+    if (scr_error_ctor_names[i] && ent->err->vt == &scr_error_vts[i]) return (int)i;
+  }
+  return -1;
 }
 
 ScrDyn *scr_error_dyn_fields(const ScrError *e) {
@@ -12132,14 +12175,29 @@ ScrStr *scr_dyn_error_string(const ScrDyn *d) {
   ScrStr *parts[2] = { NULL, NULL };
   static const char *const keys[2] = { "name", "message" };
   for (int i = 0; i < 2; i++) {
-    ScrDyn *member = scr_dyn_obj_read(d, keys[i], strlen(keys[i]));
+    ScrDyn *member = NULL;
+    if (d->kind == SCR_DYN_TYPED_REF) {
+      /* Refresh each property separately: a name getter may change the
+       * native message. Accessors still receive the original capsule. */
+      ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+      if (!scr_exc_pending()) member = scr_dyn_obj_read_receiver(view, keys[i], strlen(keys[i]), d);
+      scr_dyn_release(view);
+    } else {
+      member = scr_dyn_obj_read(d, keys[i], strlen(keys[i]));
+    }
+    if (scr_exc_pending()) {
+      scr_dyn_release(member);
+      scr_str_release(parts[0]);
+      return NULL;
+    }
     if (!member || member->kind == SCR_DYN_UNDEF) {
       parts[i] = i == 0 ? scr_str_new("Error", 5) : scr_str_new("", 0);
     } else {
       parts[i] = scr_dyn_string_coerce_js(member);
     }
     scr_dyn_release(member);
-    if (!parts[i]) {
+    if (!parts[i] || scr_exc_pending()) {
+      if (i == 1) scr_str_release(parts[1]);
       scr_str_release(parts[0]);
       return NULL;
     }
@@ -17127,11 +17185,17 @@ ScrDyn *scr_structured_clone_missing(void) {
 }
 
 bool scr_dyn_err_instanceof(const ScrDyn *d, double kind) {
-  size_t hit = scr_errdyn_find(d, false);
-  if (hit == SIZE_MAX) return false;
-  const ScrVt *vt = scr_errdyn_cache[hit].err->vt;
   int k = (int)kind;
-  return scr_error_vts[k].pre <= vt->pre && vt->pre <= scr_error_vts[k].post;
+  if (k < 0 || k >= SCR_ERR_COUNT) return false;
+  size_t hit = scr_errdyn_find(d, false);
+  if (hit != SIZE_MAX) {
+    const ScrVt *vt = scr_errdyn_cache[hit].err->vt;
+    if (scr_error_vts[k].pre <= vt->pre && vt->pre <= scr_error_vts[k].post) return true;
+  }
+  if (!d || d->kind != SCR_DYN_OBJ || !scr_error_prototypes[k]) return false;
+  for (const ScrDyn *current = scr_dyn_proto_next(d); current; current = scr_dyn_proto_next(current))
+    if (current == scr_error_prototypes[k]) return true;
+  return false;
 }
 
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver) {
@@ -17178,10 +17242,6 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
   if (key_len == 11 && memcmp(key, "constructor", 11) == 0) {
     /* An error's constructor: the interned function value its global
      * reads as (scr_dyn_error_constructor). */
-    static const char *const names[] = {
-        "Error", "TypeError", "RangeError", "SyntaxError", NULL,
-        "ReferenceError", "EvalError", "URIError", "AggregateError",
-    };
     size_t hit = scr_errdyn_find(d, false);
 #ifdef SCR_NODE_ISLANDS
     /* An error island code threw keeps its own realm's constructor (the
@@ -17194,10 +17254,10 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
     }
 #endif
     const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;
-    for (size_t kind = 0; vt && kind < sizeof names / sizeof names[0]; kind++) {
-      if (!names[kind]) continue;
+    for (size_t kind = 0; vt && kind < SCR_ERROR_CTORS; kind++) {
+      if (!scr_error_ctor_names[kind]) continue;
       if (vt != &scr_error_vts[kind]) continue;
-      return scr_dyn_error_constructor(names[kind]);
+      return scr_dyn_error_constructor(scr_error_ctor_names[kind]);
     }
   }
   return scr_dyn_retain(scr_dyn_undefined());

@@ -9,8 +9,14 @@ import {
   type IrStmt,
   type IrType,
 } from "../../ir/ir.js";
+import { everyStmtList } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
-import { classPrototypeData, hasClassPrototypeData } from "./class-prototypes.js";
+import {
+  classPrototypeData,
+  errorPrototypeValue,
+  hasClassPrototypeData,
+  standardErrorFamilyName,
+} from "./class-prototypes.js";
 import { classMethodValue } from "./class-method-values.js";
 import { accessorCall, findMethodOn } from "./lower-classes.js";
 
@@ -527,13 +533,32 @@ export function refreshErrorMethodDispatch(
         ? 1
         : 0,
   );
-  const revision = JSON.stringify(
+  // A constructor value can expose the same prototype through an alias or
+  // parameter. Scan emitted IR, including module initializers, so those
+  // spellings cannot leave native instances with a different method value.
+  const canonical =
+    lowerer.errorPrototypeValues ||
+    functions.some(
+      (fn) =>
+        !everyStmtList(fn.body, {
+          expr: (expr) =>
+            !(
+              expr.kind === "libCall" &&
+              expr.fn === "dyn.globalConstructor" &&
+              expr.args[0]?.kind === "strLit" &&
+              standardErrorFamilyName(`%${expr.args[0].value}`) !== null
+            ),
+          stmt: () => true,
+        }),
+    );
+  const revision = JSON.stringify([
+    canonical,
     overrides.map((info) => [
       info.def.name,
       hasClassPrototypeData(info),
       info.methods.has("toString"),
     ]),
-  );
+  ]);
   if (lowerer.errorMethodDispatchRevision === revision) return false;
   lowerer.errorMethodDispatchRevision = revision;
   const loc = helper.loc;
@@ -580,6 +605,15 @@ export function refreshErrorMethodDispatch(
       else_: null,
       loc,
     });
+  }
+  if (canonical) {
+    body.push({
+      kind: "return",
+      value: { kind: "dynKeyGet", value: errorPrototypeValue("Error", loc), key, type: DYN, loc },
+      loc,
+    });
+    helper.body = body;
+    return true;
   }
   const builtin = lowerer.classes.get("%Error")!;
   // Runtime-provided classes have no declaration. Keep the diagnostic

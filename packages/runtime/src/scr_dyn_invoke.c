@@ -2165,7 +2165,7 @@ __attribute__((constructor)) static void dyn_global_constructor_hook_install(voi
 /* Object.prototype.toString's tag: errors answer "[object Error]" (the
  * shared tag walk in scr_json.c answers "[object Object]" for them). */
 ScrStr *scr_dyn_object_tag_of(const ScrDyn *d) {
-  if (d->kind == SCR_DYN_OBJ && scr_dyn_err_instanceof(d, 0)) return scr_str_new(dyn_s_error_tag, sizeof dyn_s_error_tag - 1);
+  if (d->kind == SCR_DYN_OBJ && scr_dyn_ref_is_error(d)) return scr_str_new(dyn_s_error_tag, sizeof dyn_s_error_tag - 1);
   return scr_dyn_object_tag(d);
 }
 

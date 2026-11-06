@@ -130,7 +130,11 @@ import {
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
 import { findGenericMethodOn, lowerStaticFieldRead } from "../lower-classes.js";
-import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
+import {
+  errorPrototypeName,
+  errorPrototypeValue,
+  lowerClassPrototypeData,
+} from "../class-prototypes.js";
 import { lowerEnumAccess } from "../lower-enums.js";
 import {
   hasOptionalChainGuard,
@@ -2358,9 +2362,19 @@ export function lowerIntrinsicProperty(
   }
   if (lowerer.stdlibGlobalMember(expr, "Object") === "prototype")
     return { kind: "libCall", fn: "dyn.objectPrototype", args: [], type: DYN, loc: locOf(expr) };
-  // Error.prototype as a value (`F.prototype = Object.create(Error.prototype)`).
-  if (isErrorPrototypeValue(lowerer, expr))
-    return { kind: "libCall", fn: "dyn.errorPrototype", args: [], type: DYN, loc: locOf(expr) };
+  const errorFamily = errorPrototypeName(lowerer, expr);
+  if (errorFamily !== null) return errorPrototypeValue(errorFamily, locOf(expr));
+  if (ts.isPropertyAccessExpression(expr.expression)) {
+    const family = errorPrototypeName(lowerer, expr.expression);
+    if (family !== null)
+      return {
+        kind: "dynKeyGet",
+        value: errorPrototypeValue(family, locOf(expr.expression)),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+        type: DYN,
+        loc: locOf(expr),
+      };
+  }
   // Function.prototype as a VALUE (a prototype-chain link:
   // `Object.setPrototypeOf(F.prototype, Function.prototype)`): one
   // anonymous function answering undefined, length 0 — a zero-capture
@@ -5575,6 +5589,7 @@ const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "EvalError",
   "URIError",
   "AggregateError",
+  "SuppressedError",
 ]);
 
 /** The builtin constructors JavaScript sources read as real function

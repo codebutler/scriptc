@@ -2790,3 +2790,67 @@ console.log("after");
     );
   });
 });
+
+describe("Error-family prototype boundaries", () => {
+  test("borrowing toString for unmodeled native objects stays unavailable", async () => {
+    const r = await compileAndRun(
+      "error-tostring-native-object-boundary",
+      `const stringify = Error.prototype.toString;
+try { stringify.call(new Date(0)); }
+catch (error) { console.log(error.code, error.message); }
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "SC2020 Error.prototype.toString on this native object is not supported yet\n",
+    );
+  });
+
+  test("base Error constructor prototype reflection stays unavailable", async () => {
+    const r = await compileAndRun(
+      "error-constructor-prototype-boundary",
+      `const Constructor = Error;
+try { Object.getPrototypeOf(Constructor); }
+catch (error) { console.log(error.message); }
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe("Object.getPrototypeOf on this value is not supported yet\n");
+  });
+
+  test("every canonical family prototype keeps the named mutation boundary", async () => {
+    const r = await compileAndRun(
+      "error-family-prototype-mutation-boundary",
+      `function change(Constructor) {
+  try { Constructor.prototype.name = "changed"; }
+  catch (error) { console.log(error.code, error.message); }
+}
+change(Error); change(TypeError); change(RangeError); change(SyntaxError);
+change(ReferenceError); change(EvalError); change(URIError);
+change(AggregateError); change(SuppressedError);
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      [
+        "Error",
+        "TypeError",
+        "RangeError",
+        "SyntaxError",
+        "ReferenceError",
+        "EvalError",
+        "URIError",
+        "AggregateError",
+        "SuppressedError",
+      ]
+        .map((family) => `SC2020 ${family}.prototype mutation is not supported yet\n`)
+        .join(""),
+    );
+  });
+});

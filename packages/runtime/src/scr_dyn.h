@@ -1807,6 +1807,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc);
 ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrStr *what);
 ScrDyn *scr_dyn_object_prototype(void);
 ScrDyn *scr_dyn_error_prototype(void);
+ScrDyn *scr_dyn_error_family_prototype(const ScrStr *name);
 bool scr_dyn_inherits_error_prototype(const ScrDyn *value);
 ScrDyn *scr_dyn_error_capture_stack_trace_function(void);
 ScrDyn *scr_dyn_function_apply(void);

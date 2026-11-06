@@ -144,6 +144,8 @@ static ScrDyn *dyn_stdlib_prototype_build_date(const ScrStr *name) {
  * dyn.stdlibPrototype's implementation. `name` is a string literal the
  * frontend emitted, so an unknown one is a compiler/runtime mismatch. */
 ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name) {
+  ScrDyn *error = scr_dyn_error_family_prototype(name);
+  if (error) return error;
   if (strcmp(name->data, "Date") != 0) {
     static const char message[] = "scriptc: unknown standard library prototype\n";
     scr_trap(message);
