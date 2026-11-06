@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-array-slice-dynamic-positions.mjs"
+ ],
+ "diags": []
+}
