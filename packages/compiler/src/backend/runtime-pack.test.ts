@@ -143,7 +143,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 51, marker: "scr_runtime_abi_v51" },
+    runtime_abi: { version: 52, marker: "scr_runtime_abi_v52" },
     compiler: {
       command: "clang",
       identity: "fixture clang",
@@ -469,12 +469,14 @@ describe("runtime pack manifests", () => {
   test("malformed manifests and damaged artifacts fail before linking", async () => {
     const { packagePath, manifest, root } = await fixture();
     expect(() => parseRuntimePackManifest({ ...manifest, format: 2 })).toThrow("malformed");
-    expect(() =>
-      parseRuntimePackManifest({
-        ...manifest,
-        runtime_abi: { version: 50, marker: "scr_runtime_abi_v50" },
-      }),
-    ).toThrow("malformed");
+    for (const version of [49, 50, 51]) {
+      expect(() =>
+        parseRuntimePackManifest({
+          ...manifest,
+          runtime_abi: { version, marker: `scr_runtime_abi_v${version}` },
+        }),
+      ).toThrow("malformed");
+    }
     await writeFile(join(root, "artifacts/base.o"), "damaged");
     await expect(
       loadRuntimePack({

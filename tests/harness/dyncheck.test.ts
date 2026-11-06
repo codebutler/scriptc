@@ -1974,3 +1974,91 @@ console.log(inspect(sab));
     );
   });
 });
+
+describe("source-backed structural API view refusals", () => {
+  test("accessors are refused without calls and failed recursive checks release their holds", async () => {
+    const result = await compileAndRun(
+      "source-view-accessors",
+      `
+interface Api { next?: Api; value: number; call(): number; }
+let calls = 0;
+const source: unknown = Object.create(null);
+Object.defineProperty(source, "call", { value: () => 1, configurable: true });
+Object.defineProperty(source, "next", { value: source, configurable: true });
+Object.defineProperty(source, "value", { get() { calls++; return 7; }, configurable: true });
+for (let index = 0; index < 3; index++) {
+  try { const bad = source as Api; console.log("unexpected", bad.value); }
+  catch (error) { console.log(error instanceof TypeError, calls); }
+}
+Object.defineProperty(source, "value", { value: 9, writable: true, configurable: true });
+const view = source as Api;
+console.log(view.value, view.next === view, calls);
+Object.defineProperty(source, "value", { get() { calls++; return 10; }, configurable: true });
+try { console.log(view.value); } catch (error) { console.log("read", error instanceof TypeError, calls); }
+try { view.value = 11; } catch (error) { console.log("write", error instanceof TypeError, calls); }
+Object.defineProperty(source, "value", { value: 12, writable: false, configurable: true });
+try { view.value = 13; } catch (error) { console.log("readonly", error instanceof TypeError, view.value); }
+
+`,
+    );
+    expect(result).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: "true 0\ntrue 0\ntrue 0\n9 true 0\nread true 0\nwrite true 0\nreadonly true 12\n",
+    });
+  });
+  test("multiple-order source layouts retain their explicit refusal", async () => {
+    const result = await compileAndRun(
+      "source-view-multiple-order",
+      `
+interface Api { value: number; child?: Api; call(): number; }
+const native: Api = { value: 2, call: () => 1 };
+const copy = { ...native };
+console.log(copy.value);
+const source: unknown = Object.create(null);
+Object.defineProperty(source, "value", { value: 4, configurable: true });
+Object.defineProperty(source, "call", { value: () => 1, configurable: true });
+try { const view = source as Api; console.log(view.value); }
+catch (error) { console.log(error instanceof TypeError, String(error).includes("supported fixed-record structural view layout")); }
+`,
+    );
+    expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "2\ntrue true\n" });
+  });
+  test("cloning an admitted source view refuses instead of copying it", async () => {
+    const result = await compileAndRun(
+      "source-view-clone",
+      `
+interface Api { value: number; call(): number; }
+const source: unknown = Object.create(null);
+Object.defineProperty(source, "value", { value: 4, configurable: true });
+Object.defineProperty(source, "call", { value: () => 1, configurable: true });
+const view = source as Api;
+let effects = 0;
+function sourceView(): Api { effects++; return view; }
+function override(): number { effects += 10; return 9; }
+try { const clone = { ...sourceView() }; console.log(clone.value); }
+catch (error) { console.log(error instanceof TypeError, String(error).includes("explicit dynamic spread")); }
+try { const clone = { ...sourceView(), value: override() }; console.log(clone.value); }
+catch (error) { console.log("override", error instanceof TypeError, effects); }
+try { const clone = { prefix: ++effects, ...sourceView(), extra: override() }; console.log(clone.value); }
+catch (error) { console.log("mixed", error instanceof TypeError, effects); }
+function nullable(input: Api | undefined): void {
+  try { const clone = { ...input }; console.log("absent", clone.value); }
+  catch (error) { console.log("union", error instanceof TypeError); }
+}
+nullable(view);
+nullable(undefined);
+const native: Api = { value: 6, call: () => 2 };
+const nativeCopy = { ...native, value: 7 };
+console.log("native", nativeCopy.value, nativeCopy.call());
+console.log(view.value);
+`,
+    );
+    expect(result).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout:
+        "true true\noverride true 2\nmixed true 4\nunion true\nabsent undefined\nnative 7 2\n4\n",
+    });
+  });
+});

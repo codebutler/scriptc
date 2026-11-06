@@ -5257,6 +5257,9 @@ function buildLibFnSignatures() {
      * (inspect, Object.keys/values/entries) then answer through its live
      * checked view. The receiver is any such record type. Never throws. */
     "record.sourceHas": { argTypes: [null], result: BOOL },
+    /** Reject a native field-copy of an actual retained structural view.
+     * Ordinary native records pass unchanged. Borrows its record; may throw. */
+    "record.sourceCloneCheck": { argTypes: [null], result: VOID },
     /** `record.sourceSpread(built, value)`: the record a literal starting
      * with `...value` just built keeps the order of value's kept source
      * (key-order-witness.ts ordered spreads). Both are record types. Never

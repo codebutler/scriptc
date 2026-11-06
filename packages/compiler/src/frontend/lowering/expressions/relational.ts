@@ -1,3 +1,4 @@
+import { sourceAssertionShapes } from "../source-record-views.js";
 /* instanceof and in, including private-name and runtime-key in. */
 import { standardErrorFamilyName } from "../class-prototypes.js";
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
@@ -1703,6 +1704,30 @@ export function lowerInExpression(
   // NAME, not a value.
   if (ts.isPrivateIdentifier(expr.left)) {
     return lowerPrivateIn(lowerer, expr, expr.left, loc);
+  }
+  const sourceType = lowerer.mapTypeOf(lowerer.typeOf(expr.right));
+  if (sourceType?.kind === "record" && sourceAssertionShapes(lowerer).has(sourceType.shapeId)) {
+    // Evaluate the key before the receiver. Dynamic membership keeps
+    // inherited data properties distinct from Object.hasOwn.
+    const key = lowerer.declareHiddenLocal("%sourceInKey", DYN);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: key.id, init: lowerer.lowerExprExpecting(expr.left, DYN), loc },
+      ],
+      result: {
+        kind: "libCall",
+        fn: "dyn.hasKeyComputed",
+        args: [
+          { kind: "dynFrom", value: lowerer.lowerExpr(expr.right), liveRef: true, type: DYN, loc },
+          varRef(key.id, DYN, loc),
+        ],
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
   }
   // `… in <global object>`: presence on the runtime's global object. Node HAS
   // the globals the native runtime does not implement, so the answer must not

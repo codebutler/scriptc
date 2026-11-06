@@ -4,6 +4,7 @@
  * an ICE that points at source is a gift to whoever debugs it.
  */
 import { validByteNumberToken } from "./byte-numbers.js";
+import { isSourceRecordView, recordGraphHasFunction } from "./source-record-views.js";
 import type {
   IrClassDef,
   IrExpr,
@@ -6438,6 +6439,17 @@ function validateFunction(
           err(`dynCheck against non-JSON-representable type ${e.type.kind}`, e.loc);
         }
         if (e.partialView === true) {
+          if (isSourceRecordView(e)) {
+            if (
+              !recordGraphHasFunction(
+                e.type,
+                (id) => records.get(id),
+                (id) => unions.get(id),
+              )
+            )
+              err("a source-backed record view needs a structural API object target", e.loc);
+            break;
+          }
           // A partial record assertion (record-views.ts): the operand is a
           // live record whose fields are a SUBSET of the target's, with
           // equal types, so the view lacks only properties the record

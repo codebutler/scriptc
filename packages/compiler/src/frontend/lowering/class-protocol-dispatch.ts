@@ -20,6 +20,7 @@ import { type Lowerer } from "./lowerer.js";
 import { findMethodOn, upcastTo, type ClassInfo } from "./lower-classes.js";
 import { isClassCallback } from "./class-callbacks.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { readsOpenJsBinding } from "./function-returns.js";
 
 /** A method call through a class-backed protocol (`s.area()` with
  * `s: Shape`) that keeps its static signature. ClassDynamicDispatch adds
@@ -250,6 +251,13 @@ export function lowerProtocolMethodCall(
     recv.type.kind !== "dyn" ||
     lowerer.chainBlocked(call, access) ||
     call.arguments.nodes.some(ts.isSpreadElement)
+  )
+    return null;
+  // An open JS receiver can replace this method and its result. The
+  // initializer's inferred signature cannot constrain the dynamic fallback.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    readsOpenJsBinding(lowerer, access.expression)
   )
     return null;
   let signature: ProtocolSignature | null;

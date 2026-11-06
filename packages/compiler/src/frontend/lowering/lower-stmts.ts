@@ -1,3 +1,4 @@
+import { sourceAssertionShapes } from "./source-record-views.js";
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import {
@@ -8371,6 +8372,8 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   ) {
     obj = lowerer.coerceToExpected(obj, DYN);
   }
+  if (obj.type.kind === "record" && sourceAssertionShapes(lowerer).has(obj.type.shapeId))
+    obj = { kind: "dynFrom", value: obj, liveRef: true, type: DYN, loc };
   if (obj.type.kind === "dyn") {
     const strict = { kind: "boolLit", value: isStrictCode(expr), type: BOOL, loc } as const;
     if (ts.isElementAccessExpression(target)) {

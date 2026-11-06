@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dynamic-api-record-callback/library.mjs",
+  "<repo>/tests/corpus/dynamic-api-record-callback/main.ts"
+ ],
+ "diags": []
+}

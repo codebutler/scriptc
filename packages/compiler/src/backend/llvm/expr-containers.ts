@@ -12,6 +12,7 @@ import {
   mapKeyAccess,
   type MapKeyAccess,
   mapKeyKindNum,
+  SOURCE_RECORD_MAP_KEY,
   mapKeyParamType,
   mapValKindNum,
   traceArg,
@@ -1317,6 +1318,18 @@ export function wrapNullable(
  * types: the reference adapters of each side and, for a union of value
  * arms, the key kind of every arm (immutable module data); all-reference
  * unions keep their existing identity-only representation. */
+function collectionKeyKind(host: LlvmEmitterContext, key: IrType): number {
+  if (key.kind === "record" && host.shapeHost.recordViews?.sourceTargets.has(key.shapeId))
+    return SOURCE_RECORD_MAP_KEY;
+  if (key.kind === "union") {
+    const arms = host.unionsById.get(key.unionId)?.arms;
+    if (arms?.some((arm) => collectionKeyKind(host, arm) === SOURCE_RECORD_MAP_KEY))
+      return host.nullableUnions.of(key) !== null ? SOURCE_RECORD_MAP_KEY : 7;
+    return host.nullableUnions.of(key) !== null ? 2 : mapKeyKindNum(key, arms);
+  }
+  return mapKeyKindNum(key);
+}
+
 function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const rc = isRefCounted(value)
     ? vAdapters(host.shapeHost, value)
@@ -1327,9 +1340,11 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
       : { retain: "null", release: "null", trace: "null" };
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
   let unionKeys = "null";
-  if (mapKeyKindNum(key, arms) === 7 && host.nullableUnions.of(key) === null) {
+  if (collectionKeyKind(host, key) === 7 && host.nullableUnions.of(key) === null) {
     if (!arms) throw new InternalCompilerError("llvm emitter bug: collection key union missing");
-    unionKeys = host.cstr(arms.map((arm) => String.fromCharCode(mapKeyKindNum(arm))).join(""));
+    unionKeys = host.cstr(
+      arms.map((arm) => String.fromCharCode(collectionKeyKind(host, arm))).join(""),
+    );
   }
   return host.shapeHost.mapOps([
     keyRc.retain,
@@ -1345,10 +1360,9 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
 /** Construct matching key/value storage once for Maps and Sets. */
 function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const B = host.B;
-  const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
   // SCR_MAP_KEY_REF (2): a union key with a pointer representation is that
   // pointer (boxedUnionIds).
-  const kind = host.nullableUnions.of(key) !== null ? 2 : mapKeyKindNum(key, arms);
+  const kind = collectionKeyKind(host, key);
   const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).

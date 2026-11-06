@@ -227,3 +227,22 @@ test("debug ids after a comment that holds a quote are renamed", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 }, 60_000);
+
+test("live accessor record field helpers replay with their conversion mode", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-chunked-accessor-fields-"));
+  try {
+    for (const program of ["live-accessor-record-fields.ts", "live-accessor-record-cycles.ts"]) {
+      const ir = await lower(program, dir);
+      const fresh = (): IrModule => deserializeModule(ir);
+      for (const [name, options] of Object.entries(OPTIONS)) {
+        const serial = text(emitLlvmModuleSource(fresh(), options));
+        for (const functionChunks of [3, 7]) {
+          const chunked = text(emitLlvmModuleSource(fresh(), { ...options, functionChunks }));
+          expect(chunked === serial, `${program}, ${name}, ${functionChunks} chunks`).toBe(true);
+        }
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 120_000);

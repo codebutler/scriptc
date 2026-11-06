@@ -1,3 +1,4 @@
+import { sourceAssertionShapes } from "./source-record-views.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
@@ -107,6 +108,7 @@ import {
   RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
+import { readsOpenJsBinding } from "./function-returns.js";
 import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
@@ -312,6 +314,7 @@ import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
 import {
   spreadNeedsRuntimeArity,
+  hasOptionalTupleSpreads,
   completeFuncValueArgs,
   checkedRestCallArgs,
   lowerSpreadArgsCall,
@@ -2368,12 +2371,30 @@ export function lowerCallThroughValue(
   callee: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  return overloadValueResult(
-    lowerer,
-    expr,
-    callee,
-    lowerCallThroughValueRaw(lowerer, expr, callee, loc),
-  );
+  // A literal-key API member reaches this fallback as a recordGet. Keep
+  // the original receiver only for the call expression; extracting the
+  // same property as a function still has the ordinary bare-call meaning.
+  let init: IrStmt | undefined;
+  let receiver: IrExpr | undefined;
+  if (
+    ts.isElementAccessExpression(expr.expression) &&
+    callee.kind === "recordGet" &&
+    sourceAssertionShapes(lowerer).has(callee.shapeId)
+  ) {
+    const local = lowerer.declareHiddenLocal("%computedApiReceiver", callee.obj.type);
+    init = { kind: "varDecl", localId: local.id, init: callee.obj, loc };
+    const reference = varRef(local.id, local.type, loc);
+    callee = { ...callee, obj: reference };
+    receiver = lowerer.coerceToExpected(reference, DYN);
+  }
+  let result = lowerCallThroughValueRaw(lowerer, expr, callee, loc);
+  if (receiver) {
+    if (result.kind !== "callValue" && result.kind !== "dynCall")
+      lowerer.unsupported("SC1090", expr, "computed structural API call form");
+    result = { ...result, receiver };
+  }
+  result = overloadValueResult(lowerer, expr, callee, result);
+  return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
 }
 
 /** A call through a VALUE of an OVERLOADED type: the value holds the set's
@@ -4598,9 +4619,16 @@ function lowerDynReceiverMethodCall(
       ? lowerProtocolMethodCall(lowerer, call, access, recv)
       : null;
   if (protocolCall) return protocolCall;
-  const dispatched = callbackProperty
-    ? null
-    : lowerDynDispatchMethodCall(lowerer, call, access, recv, arrayReceiver);
+  // Open own methods can become getters. Read the callee before argument
+  // effects rather than deferring lookup to a class-dispatch fallback.
+  const openOwnMethod =
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    !DYN_PROTO_METHOD_NAMES.has(access.name.text) &&
+    readsOpenJsBinding(lowerer, access.expression);
+  const dispatched =
+    callbackProperty || openOwnMethod
+      ? null
+      : lowerDynDispatchMethodCall(lowerer, call, access, recv, arrayReceiver);
   if (dispatched) return dispatched;
   // Names NO dyn-representable prototype declares: the member can only
   // be an OWN property, so "read the member, call it" IS Node's
@@ -10641,7 +10669,9 @@ export function lowerRecordFieldCall(
   const target = lowerer.fieldTarget(access);
   const loc = locOf(call);
   const receiverLocal =
-    target && isJsSourceFile(ts.getSourceFileOfNode(call))
+    target &&
+    (isJsSourceFile(ts.getSourceFileOfNode(call)) ||
+      sourceAssertionShapes(lowerer).has(receiverType.shapeId))
       ? lowerer.declareHiddenLocal("%callReceiver", target.obj.type)
       : null;
   const init: IrStmt | null =
@@ -10777,6 +10807,23 @@ export function lowerRecordFieldCall(
     )
       boxedResult = lowerer.coerceInto(call, boxedResult, resolved);
     return boxedResult;
+  }
+  if (hasOptionalTupleSpreads(lowerer, call)) {
+    const spread = lowerSpreadArgsCall(lowerer, call, callee, loc);
+    if (spread?.kind === "dynCall") {
+      let result: IrExpr = receiver ? { ...spread, receiver } : spread;
+      if (callee.type.ret.kind !== "void")
+        result = lowerer.coerceInto(call, result, callee.type.ret);
+      const memberType = lowerer.typeOf(access);
+      if (isGenericCallableMemberType(memberType, lowerer.checker)) {
+        const resolved = lowerer.irTypeOf(call);
+        if (resolved.kind !== "void") result = lowerer.coerceInto(call, result, resolved);
+      } else if (isOverloadedMemberAccess(lowerer, access)) {
+        const resolved = resolvedOverloadResultType(lowerer, call);
+        if (resolved.kind !== "void") result = lowerer.coerceInto(call, result, resolved);
+      }
+      return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
+    }
   }
   const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
   let result: IrExpr = {

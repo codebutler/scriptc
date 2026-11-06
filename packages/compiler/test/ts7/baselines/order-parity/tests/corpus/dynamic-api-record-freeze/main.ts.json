@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dynamic-api-record-freeze/library.mjs",
+  "<repo>/tests/corpus/dynamic-api-record-freeze/main.ts"
+ ],
+ "diags": []
+}

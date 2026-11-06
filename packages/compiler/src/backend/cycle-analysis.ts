@@ -1,5 +1,6 @@
 import type { DynamicFieldStores } from "../ir/int32-slots.js";
 import type { IrModule, IrType } from "../ir/ir.js";
+import { sourceRecordViewTargets } from "../ir/source-record-views.js";
 import {
   DYN,
   DYN_CLASS_PROPERTIES,
@@ -129,6 +130,7 @@ function analyzeCycles(
   const programLifetime = (className: string): boolean =>
     lifetimeRoots.size > 0 && lifetimeRoots.has(rootOf(className));
   const mutability = precomputed ?? computeCycleMutability(mod, unitOfClass, stores);
+  const sourceViews = sourceRecordViewTargets(mod);
   const shapeDefs = [
     ...classes.map((c) => ({
       key: `object:${c.name}`,
@@ -155,9 +157,11 @@ function analyzeCycles(
     ...(mod.records ?? []).map((r) => ({
       key: `record:${r.id}`,
       unit: `record:${r.id}`,
-      fields: r.indexValue
-        ? [...r.fields, { name: "<overflow>", type: mapOf(STRING, r.indexValue) }]
-        : r.fields,
+      fields: [
+        ...r.fields,
+        ...(r.indexValue ? [{ name: "<overflow>", type: mapOf(STRING, r.indexValue) }] : []),
+        ...(sourceViews.has(r.id) ? [{ name: "<view source>", type: DYN }] : []),
+      ],
     })),
   ];
   interface Node {

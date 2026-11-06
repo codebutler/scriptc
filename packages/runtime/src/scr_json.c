@@ -4796,6 +4796,135 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
   return view;
 }
 
+/* A source-backed structural view owns the original object, rather than
+ * a materialized copy. Its native fields stay zero: reads and writes use
+ * the source, and boxing the view returns that same source. */
+void *scr_dyn_source_record_view(ScrDyn *source, void *(*alloc)(void), const ScrDynPath *path) {
+  if (source->kind != SCR_DYN_OBJ && source->kind != SCR_DYN_TYPED_REF) {
+    scr_dyn_check_fail(path, "ordinary object for a structural view", source);
+    return NULL;
+  }
+  void *view = alloc();
+  *(size_t *)view |= SCR_RC_FROZEN;
+  ScrRecordSource entry = { .rec = view, .capsule = scr_dyn_retain(source) };
+  scr_record_source_put(&entry);
+  return view;
+}
+
+/* Descriptor inspection never invokes a getter. Accessors and exotic
+ * prototype links are refused before a checked view can read them. Only
+ * the requested property is inspected; unrelated accessors remain inert. */
+static bool scr_source_record_data_field(const ScrDyn *source, const char *name,
+                                         size_t name_len, const ScrDynPath *path) {
+  ScrDyn *held = source->kind == SCR_DYN_TYPED_REF
+    ? scr_dyn_typed_ref_materialize(source) : scr_dyn_retain((ScrDyn *)source);
+  if (scr_exc_pending()) { scr_dyn_release(held); return false; }
+  bool admitted = true;
+  for (const ScrDyn *at = held; at; at = at->prototype) {
+    if (at == scr_builtin_object_prototype) break;
+    if (at->kind != SCR_DYN_OBJ) { admitted = false; break; }
+    const ScrDynEntry *entry = scr_dyn_find_entry(at, name, name_len);
+    if (!entry) continue;
+    admitted = !entry->accessor;
+    break;
+  }
+  scr_dyn_release(held);
+  if (!admitted)
+    scr_dyn_check_fail(path, "data property for a structural view (accessors and exotic prototypes are unsupported)", source);
+  return admitted;
+}
+
+ScrDyn *scr_dyn_source_record_read(ScrDyn *source, const char *name, size_t name_len,
+                                   const ScrDynPath *path) {
+  if (!scr_source_record_data_field(source, name, name_len, path)) return NULL;
+  if (source->kind == SCR_DYN_TYPED_REF) {
+    ScrStr *key = scr_str_new(name, name_len);
+    ScrDyn *value = scr_dyn_typed_ref_key_get(source, key);
+    scr_str_release(key);
+    if (value || scr_exc_pending()) return value;
+    ScrDyn *view = scr_dyn_typed_ref_materialize(source);
+    value = view && !scr_exc_pending()
+      ? scr_dyn_obj_read_receiver(view, name, name_len, source) : NULL;
+    scr_dyn_release(view);
+    return value;
+  }
+  return scr_dyn_obj_read(source, name, name_len);
+}
+
+/* The collector traces this owned source edge instead of the zeroed
+ * native fields. Ordinary records and native offset views answer false. */
+ScrDyn *scr_record_source_view_source(void *view) {
+  ScrRecordSource *entry = scr_record_source_slot(view);
+  return entry && entry->capsule && !entry->viewed ? entry->capsule : NULL;
+}
+
+bool scr_record_source_view_trace(void *view, void (*visit)(void *, void *), void *ctx) {
+  ScrRecordSource *entry = scr_record_source_slot(view);
+  if (!entry || !entry->capsule || entry->viewed) return false;
+  visit(entry->capsule, ctx);
+  return true;
+}
+
+void scr_record_source_view_refuse_clone(void *view) {
+  ScrDyn *source = scr_record_source_view_source(view);
+  if (source)
+    scr_dyn_check_fail(NULL, "explicit dynamic spread instead of a native structural-view clone", source);
+}
+
+/* Native record comparisons and typed collection keys use the original
+ * JavaScript identity. A plain native record remains its own identity. */
+void *scr_record_source_view_identity(void *view) {
+  ScrDyn *source = scr_record_source_view_source(view);
+  if (!source) return view;
+  if (source->kind == SCR_DYN_TYPED_REF) return source->v.typed_ref.ptr;
+  if (source->kind == SCR_DYN_OBJ && source->v.obj.source_identity)
+    return source->v.obj.source_identity;
+  return source;
+}
+
+/* Cycle teardown has already accounted for the traced source edge. Drop
+ * the registry entry without releasing that edge a second time. */
+void scr_record_source_view_gc_clear(void *view) {
+  ScrRecordSource *entry = scr_record_source_slot(view);
+  if (!entry || !entry->capsule || entry->viewed) return;
+  entry->capsule = NULL;
+  scr_record_source_drop(entry);
+}
+
+/* Owned reads also serve native partial views of source-capable shapes;
+ * their existing borrowed extra store keeps its original behavior. */
+ScrDyn *scr_record_source_view_read(void *view, const char *name, size_t name_len) {
+  ScrRecordSource *entry = scr_record_source_slot(view);
+  if (entry && entry->capsule && !entry->viewed)
+    return scr_dyn_source_record_read(entry->capsule, name, name_len, NULL);
+  return scr_dyn_retain(scr_record_view_extra(view, name, name_len));
+}
+
+bool scr_record_source_view_has(void *view, const char *name, size_t name_len) {
+  ScrRecordSource *entry = scr_record_source_slot(view);
+  if (!entry || !entry->capsule || entry->viewed)
+    return scr_record_view_extra(view, name, name_len) != NULL;
+  ScrStr *key = scr_str_new(name, name_len);
+  bool has = scr_dyn_has_own(entry->capsule, key);
+  scr_str_release(key);
+  return has;
+}
+
+/* Consumes value, matching the native partial-view setter. */
+void scr_record_source_view_set(void *view, const char *name, size_t name_len, ScrDyn *value) {
+  ScrRecordSource *entry = scr_record_source_slot(view);
+  if (!entry || !entry->capsule || entry->viewed) {
+    scr_record_view_extra_set(view, name, name_len, value);
+    return;
+  }
+  if (scr_source_record_data_field(entry->capsule, name, name_len, NULL)) {
+    ScrStr *key = scr_str_new(name, name_len);
+    scr_dyn_key_set(entry->capsule, key, value);
+    scr_str_release(key);
+  }
+  scr_dyn_release(value);
+}
+
 /* The slot of field `position` of a view (emitted view guards, cold). A
  * PARTIAL view (a record literal asserted to a wider record type) holds
  * SIZE_MAX for every field its viewed record does not declare: the lookup
@@ -4805,6 +4934,7 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
  * NULL case is unreachable for programs without a partial assertion. */
 void *scr_record_view_slot(void *view, size_t position) {
   ScrRecordSource *entry = scr_record_source_slot(view);
+  if (!entry->offsets) return NULL;
   size_t offset = entry->offsets[position];
   if (offset == SIZE_MAX) return NULL;
   return (char *)entry->viewed + offset;
@@ -4880,6 +5010,7 @@ static void *scr_record_view_retain(void *view) {
 
 /* A view left the table: its capsule's cast list stops naming it. */
 static void scr_record_view_forget(ScrDyn *capsule, const void *view) {
+  if (capsule->kind != SCR_DYN_TYPED_REF) return;
   for (ScrDynTypedCast **at = &capsule->v.typed_ref.casts; *at; at = &(*at)->next) {
     if ((*at)->borrowed && (*at)->ptr == view) {
       ScrDynTypedCast *cast = *at;
@@ -13868,6 +13999,13 @@ typedef struct {
   size_t cap;
 } ScrDynVisitLog;
 
+typedef struct ScrDynBuildHold {
+  void *value;
+  void (*release)(void *);
+  struct ScrDynBuildHold *next;
+} ScrDynBuildHold;
+static SCR_TL ScrDynBuildHold *scr_dyn_build_holds;
+
 static SCR_TL size_t scr_dyn_visit_depth;
 /* The (value, matcher) pairs being checked further up the stack. */
 static SCR_TL ScrDynVisitSet scr_dyn_matching;
@@ -13988,11 +14126,31 @@ static void scr_dyn_visit_clear(ScrDynVisitSet *s, ScrDynVisitLog *log) {
   }
 }
 
+void scr_dyn_build_hold(void *value, void *(*retain)(void *), void (*release)(void *)) {
+  if (!scr_dyn_visit_depth || !value) return;
+  ScrDynBuildHold *hold = malloc(sizeof *hold);
+  if (!hold) scr_trap("scriptc: out of memory\n");
+  *hold = (ScrDynBuildHold){retain(value), release, scr_dyn_build_holds};
+  scr_dyn_build_holds = hold;
+}
+
+static void scr_dyn_build_holds_clear(void) {
+  ScrDynBuildHold *hold = scr_dyn_build_holds;
+  scr_dyn_build_holds = NULL;
+  while (hold) {
+    ScrDynBuildHold *next = hold->next;
+    hold->release(hold->value);
+    free(hold);
+    hold = next;
+  }
+}
+
 static void scr_dyn_visit_exit(void) {
   if (--scr_dyn_visit_depth != 0) return;
   scr_dyn_session_ran_code = false;
   scr_dyn_visit_clear(&scr_dyn_built, &scr_dyn_built_log);
   scr_dyn_visit_clear(&scr_dyn_viewed, &scr_dyn_viewed_log);
+  scr_dyn_build_holds_clear();
 }
 
 /* Getters and proxy traps run user code, which may start conversions of
@@ -14003,6 +14161,7 @@ typedef struct {
   size_t depth;
   ScrDynVisitSet matching, built, viewed;
   ScrDynVisitLog built_log, viewed_log;
+  ScrDynBuildHold *holds;
   bool track;
   const ScrDyn *held;
   bool trusted;
@@ -14012,9 +14171,10 @@ typedef struct {
 static void scr_dyn_visit_suspend(ScrDynVisitState *saved) {
   *saved = (ScrDynVisitState){scr_dyn_visit_depth, scr_dyn_matching,   scr_dyn_built,
                               scr_dyn_viewed,      scr_dyn_built_log,  scr_dyn_viewed_log,
-                              scr_dyn_build_track, scr_dyn_visit_held, scr_dyn_trusted,
+                              scr_dyn_build_holds, scr_dyn_build_track, scr_dyn_visit_held, scr_dyn_trusted,
                               scr_dyn_session_ran_code};
   scr_dyn_visit_depth = 0;
+  scr_dyn_build_holds = NULL;
   scr_dyn_trusted = false;
   scr_dyn_session_ran_code = false;
   scr_dyn_matching = scr_dyn_built = scr_dyn_viewed = (ScrDynVisitSet){NULL, 0, 0};
@@ -14023,6 +14183,8 @@ static void scr_dyn_visit_suspend(ScrDynVisitState *saved) {
 }
 
 static void scr_dyn_visit_resume(const ScrDynVisitState *saved) {
+  /* Dispose the inner session while its own memo/depth are still current. */
+  scr_dyn_build_holds_clear();
   free(scr_dyn_matching.slots);
   free(scr_dyn_built.slots);
   free(scr_dyn_viewed.slots);
@@ -14034,6 +14196,7 @@ static void scr_dyn_visit_resume(const ScrDynVisitState *saved) {
   scr_dyn_viewed = saved->viewed;
   scr_dyn_built_log = saved->built_log;
   scr_dyn_viewed_log = saved->viewed_log;
+  scr_dyn_build_holds = saved->holds;
   scr_dyn_build_track = saved->track;
   scr_dyn_visit_held = saved->held;
   scr_dyn_trusted = saved->trusted;
