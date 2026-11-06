@@ -1996,12 +1996,46 @@ console.log(view.value, view.next === view, calls);
 Object.defineProperty(source, "value", { get() { calls++; return 10; }, configurable: true });
 try { console.log(view.value); } catch (error) { console.log("read", error instanceof TypeError, calls); }
 try { view.value = 11; } catch (error) { console.log("write", error instanceof TypeError, calls); }
+Object.defineProperty(source, "value", { value: 12, writable: false, configurable: true });
+try { view.value = 13; } catch (error) { console.log("readonly", error instanceof TypeError, view.value); }
+
 `,
     );
     expect(result).toEqual({
       exitCode: 0,
       stderr: "",
-      stdout: "true 0\ntrue 0\ntrue 0\n9 true 0\nread true 0\nwrite true 0\n",
+      stdout: "true 0\ntrue 0\ntrue 0\n9 true 0\nread true 0\nwrite true 0\nreadonly true 12\n",
     });
+  });
+  test("freezable source layouts retain their explicit refusal", async () => {
+    const result = await compileAndRun(
+      "source-view-freezable",
+      `
+interface Api { value: number; call(): number; }
+const source: unknown = Object.create(null);
+Object.defineProperty(source, "value", { value: 4, configurable: true });
+Object.defineProperty(source, "call", { value: () => 1, configurable: true });
+Object.freeze(source);
+try { const view = source as Api; console.log(view.value); }
+catch (error) { console.log(error instanceof TypeError, String(error).includes("supported fixed-record structural view layout")); }
+`,
+    );
+    expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "true true\n" });
+  });
+  test("cloning an admitted source view refuses instead of copying it", async () => {
+    const result = await compileAndRun(
+      "source-view-clone",
+      `
+interface Api { value: number; call(): number; }
+const source: unknown = Object.create(null);
+Object.defineProperty(source, "value", { value: 4, configurable: true });
+Object.defineProperty(source, "call", { value: () => 1, configurable: true });
+const view = source as Api;
+try { const clone = { ...view }; console.log(clone.value); }
+catch (error) { console.log(error instanceof TypeError, String(error).includes("explicit dynamic spread")); }
+console.log(view.value);
+`,
+    );
+    expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "true true\n4\n" });
   });
 });

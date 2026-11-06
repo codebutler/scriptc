@@ -4824,6 +4824,17 @@ static bool scr_source_record_data_field(const ScrDyn *source, const char *name,
 ScrDyn *scr_dyn_source_record_read(ScrDyn *source, const char *name, size_t name_len,
                                    const ScrDynPath *path) {
   if (!scr_source_record_data_field(source, name, name_len, path)) return NULL;
+  if (source->kind == SCR_DYN_TYPED_REF) {
+    ScrStr *key = scr_str_new(name, name_len);
+    ScrDyn *value = scr_dyn_typed_ref_key_get(source, key);
+    scr_str_release(key);
+    if (value || scr_exc_pending()) return value;
+    ScrDyn *view = scr_dyn_typed_ref_materialize(source);
+    value = view && !scr_exc_pending()
+      ? scr_dyn_obj_read_receiver(view, name, name_len, source) : NULL;
+    scr_dyn_release(view);
+    return value;
+  }
   return scr_dyn_obj_read(source, name, name_len);
 }
 
