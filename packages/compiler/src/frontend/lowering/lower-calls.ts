@@ -108,6 +108,7 @@ import {
   RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
+import { readsOpenJsBinding } from "./function-returns.js";
 import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
@@ -4617,9 +4618,16 @@ function lowerDynReceiverMethodCall(
       ? lowerProtocolMethodCall(lowerer, call, access, recv)
       : null;
   if (protocolCall) return protocolCall;
-  const dispatched = callbackProperty
-    ? null
-    : lowerDynDispatchMethodCall(lowerer, call, access, recv, arrayReceiver);
+  // Open own methods can become getters. Read the callee before argument
+  // effects rather than deferring lookup to a class-dispatch fallback.
+  const openOwnMethod =
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    !DYN_PROTO_METHOD_NAMES.has(access.name.text) &&
+    readsOpenJsBinding(lowerer, access.expression);
+  const dispatched =
+    callbackProperty || openOwnMethod
+      ? null
+      : lowerDynDispatchMethodCall(lowerer, call, access, recv, arrayReceiver);
   if (dispatched) return dispatched;
   // Names NO dyn-representable prototype declares: the member can only
   // be an OWN property, so "read the member, call it" IS Node's

@@ -14,7 +14,7 @@ test("explicit JSDoc result contracts remain checked on open-member returns", as
       `
 /** @returns {string} */
 function generate(decorator) {
-  let handlers = { result() { return "text"; } };
+  let handlers = { value: "text", result() { return this.value; } };
   if (decorator) handlers = decorator(handlers);
   return handlers.result();
 }
@@ -22,7 +22,7 @@ console.log(generate(null));
 try { console.log(generate(() => ({ result() { return [7]; } }))); }
 catch (error) { console.log(error instanceof TypeError); }
 function declaredArrow(decorator) {
-  let handlers = { result() { return "arrow"; } };
+  let handlers = { value: "arrow", result() { return this.value; } };
   if (decorator) handlers = decorator(handlers);
   /** @type {() => string} */
   const run = () => handlers.result();
@@ -31,7 +31,7 @@ function declaredArrow(decorator) {
 try { console.log(declaredArrow(() => ({ result() { return [11]; } }))()); }
 catch (error) { console.log(error instanceof TypeError); }
 function declaredMethod(decorator) {
-  let handlers = { result() { return "method"; } };
+  let handlers = { value: "method", result() { return this.value; } };
   if (decorator) handlers = decorator(handlers);
   /** @type {{ run(): string }} */
   const api = { run() { return handlers.result(); } };
