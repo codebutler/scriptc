@@ -719,6 +719,9 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     t.kind === "record" ||
     t.kind === "object" ||
     t.kind === "array" ||
+    // A typed-array view owns its identity independently of its backing
+    // allocation and contents, just like a JavaScript TypedArray object.
+    t.kind === "bytes" ||
     t.kind === "netServer" ||
     t.kind === "symbol" ||
     // A function value is one closure for its whole life (top-level
