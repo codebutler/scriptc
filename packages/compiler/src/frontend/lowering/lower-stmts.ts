@@ -6774,7 +6774,10 @@ export function lowerVarDecl(
                 : undefined,
             );
   } catch (e) {
-    if (e instanceof PoisonError) {
+    // A self-capturing initializer may already have declared its TDZ box.
+    // Keep that binding on retry: a replacement shadows the box that the
+    // declaration will initialize and leaves its closures reading no value.
+    if (e instanceof PoisonError && !(declSymbol && lowerer.ctx.tdzPredeclared.has(declSymbol))) {
       const salvaged = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
       if (salvaged && salvaged.kind !== "void") {
         lowerer.declareLocal(decl.name, decl.name.text, salvaged, isLet);

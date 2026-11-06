@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/self-captured-object-retry-tdz.ts"
+ ],
+ "diags": []
+}
