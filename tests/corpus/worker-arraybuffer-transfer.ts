@@ -35,7 +35,7 @@ if (isMainThread) {
     }
   });
   worker.on("exit", (code: number) => console.log("exit", code));
-  const visited = walkUntilDetached(bytes, () => worker.postMessage({ buffer, bytes, view, alias: bytes }, [buffer]));
+  const visited = walkUntilDetached(bytes, () => worker.postMessage({ buffer, bytes, view, alias: bytes }, { transfer: [buffer] }));
   check(visited === 1, "typed loop cached its bound across transfer");
   check(buffer.byteLength === 0 && bytes.length === 0 && bytes.byteLength === 0 && bytes.byteOffset === 0,
     "main sender was not detached");

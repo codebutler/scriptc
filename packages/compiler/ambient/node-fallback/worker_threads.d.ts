@@ -50,7 +50,10 @@ declare module "worker_threads" {
     removeListener(event: string, listener: (...args: any[]) => void): this;
     prependListener(event: string, listener: (...args: any[]) => void): this;
     prependOnceListener(event: string, listener: (...args: any[]) => void): this;
-    postMessage(value: unknown, transferList?: readonly unknown[]): void;
+    postMessage(
+      value: unknown,
+      transferOrOptions?: readonly unknown[] | { transfer?: readonly unknown[] },
+    ): void;
     ref(): void;
     unref(): void;
     terminate(): Promise<number>;
@@ -67,7 +70,10 @@ declare module "worker_threads" {
     removeListener(event: string, listener: (...args: any[]) => void): this;
     prependListener(event: string, listener: (...args: any[]) => void): this;
     prependOnceListener(event: string, listener: (...args: any[]) => void): this;
-    postMessage(value: unknown, transferList?: readonly unknown[]): void;
+    postMessage(
+      value: unknown,
+      transferOrOptions?: readonly unknown[] | { transfer?: readonly unknown[] },
+    ): void;
     start(): void;
     close(callback?: () => void): void;
     ref(): void;
