@@ -7307,6 +7307,11 @@ function mapBoundKeyofNeverConditional(type: ts.Type, ctx: TypeMapperCtx): IrTyp
 function mapBoundMappedType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, resolveTypeParamTs, shapes, unions } = ctx;
   if (!resolveTypeParamTs || !isMappedShape(widened)) return null;
+  // The checker already instantiated these members. The declaration's
+  // original source parameter is not a binding of this alias instance;
+  // looking it up would make a concrete record appear scope-sensitive.
+  // Its ordinary field mapping below still resolves any outer parameters.
+  if (resolvedMappedAlias(widened, ctx)) return null;
   const symbol = widened.getSymbol();
   const node = symbol
     ? symbol.declarations.find((d): d is ts.MappedTypeNode => ts.isMappedTypeNode(d))

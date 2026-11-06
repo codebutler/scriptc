@@ -29,12 +29,28 @@ beforeAll(() => {
     { length: 10 },
     (_, i) => `type Failed${i + 1}<T> = { left: Failed${i}<T>; right: Failed${i}<T> };`,
   );
+  const mappedLayers = Array.from(
+    { length: 10 },
+    (_, i) => `type Mapped${i + 1} = { left: Mapped${i}; right: Mapped${i} };`,
+  );
   writeFileSync(
     entry,
     `
       type D0 = { value: number };
       ${layers.join("\n")}
       export type Diamond = D10;
+      type Mapped0 = Readonly<{ value: number }>;
+      ${mappedLayers.join("\n")}
+      export type MappedDiamond = Mapped10;
+      export type Source = { count?: number; label: string; deep: { yes: boolean } };
+      export type ConcreteMapped = Readonly<Source>;
+      export type NestedMapped<T> = Readonly<{ value: T }>;
+      export type Binding = { first: number; second?: string };
+      export type OtherBinding = { swapped: boolean };
+      export function mappedBody<S>(value: S) {
+        type BodyMapped = { [K in keyof S]?: S[K] };
+        return value as BodyMapped;
+      }
       type Failed0<T> = { stable: number; bad: T };
       ${failedLayers.join("\n")}
       export type FailedDiamond<T> = Failed10<T>;
@@ -319,4 +335,101 @@ test("once notification happens at the first failed leaf before the next field",
     ctx.checker.getTypeOfSymbol = original;
   }
   expect(order).toEqual(["field:left", "piece", "field:right"]);
+});
+
+test("resolved mapped records do not consult unrelated declaration bindings", () => {
+  const ctx = context();
+  let bindings = 0;
+  let reads = 0;
+  ctx.resolveTypeParamTs = () => {
+    bindings++;
+    noteScopeSensitiveMapping();
+    return null;
+  };
+  const original = ctx.checker.getTypeOfSymbol;
+  ctx.checker.getTypeOfSymbol = (symbol) => {
+    reads++;
+    return original.call(ctx.checker, symbol);
+  };
+  let result: IrType | null;
+  try {
+    result = mapped("MappedDiamond", ctx);
+  } finally {
+    ctx.checker.getTypeOfSymbol = original;
+  }
+  expect(bindings).toBe(0);
+  expect(reads).toBeLessThan(100);
+  for (let i = 0; i < 10; i++) {
+    const pair = fields(result, ctx);
+    expect(pair[0]!.type).toEqual(pair[1]!.type);
+    result = pair[0]!.type;
+  }
+  expect(fields(result, ctx)).toMatchObject([{ name: "value", type: { kind: "f64" } }]);
+});
+
+test("resolved mapped layouts retain optionality, nested fields and declaration order", () => {
+  const expected = context();
+  const expectedType = mapped("ConcreteMapped", expected);
+  const ctx = context();
+  ctx.resolveTypeParamTs = () => {
+    throw new Error("A concrete mapped alias must not ask for its declaration parameter");
+  };
+  expect(mapped("ConcreteMapped", ctx)).toEqual(expectedType);
+  expect(ctx.shapes.shapes).toEqual(expected.shapes.shapes);
+  expect(ctx.unions.unions).toEqual(expected.unions.unions);
+  if (expectedType?.kind !== "record") throw new Error("Expected a record");
+  expect(ctx.shapes.get(expectedType.shapeId)?.declaredOrder).toEqual(["count", "label", "deep"]);
+});
+
+test("open mapped aliases inside generic bodies still resolve the active source binding", () => {
+  const ctx = context();
+  let source = aliases.get("Binding")!;
+  let bindings = 0;
+  ctx.resolveTypeParamTs = () => {
+    bindings++;
+    noteScopeSensitiveMapping();
+    return source;
+  };
+  const first = fields(mapped("BodyMapped", ctx), ctx);
+  expect(first.map((field) => field.name)).toEqual(["first", "second"]);
+  expect(
+    first.map((field) => {
+      if (field.type.kind !== "union") throw new Error("Expected optional mapped field");
+      return ctx.unions
+        .get(field.type.unionId)!
+        .arms.map((arm) => arm.kind)
+        .sort();
+    }),
+  ).toEqual([
+    ["f64", "undefinedT"],
+    ["string", "undefinedT"],
+  ]);
+  source = aliases.get("OtherBinding")!;
+  const second = fields(mapped("BodyMapped", ctx), ctx);
+  expect(second.map((field) => field.name)).toEqual(["swapped"]);
+  const secondType = second[0]!.type;
+  if (secondType.kind !== "union") throw new Error("Expected optional mapped field");
+  expect(
+    ctx.unions
+      .get(secondType.unionId)!
+      .arms.map((arm) => arm.kind)
+      .sort(),
+  ).toEqual(["bool", "undefinedT"]);
+  expect(bindings).toBeGreaterThan(0);
+});
+
+test("a resolved mapped record can still contain a binding-sensitive field", () => {
+  const ctx = context();
+  let kind: "string" | "f64" = "string";
+  ctx.resolveTypeParam = () => ({ kind });
+  ctx.resolveTypeParamTs = () => {
+    throw new Error("The mapped declaration parameter is not an outer field binding");
+  };
+  expect(fields(mapped("NestedMapped", ctx), ctx)).toMatchObject([
+    { name: "value", type: { kind: "string" } },
+  ]);
+  kind = "f64";
+  expect(fields(mapped("NestedMapped", ctx), ctx)).toMatchObject([
+    { name: "value", type: { kind: "f64" } },
+  ]);
 });
