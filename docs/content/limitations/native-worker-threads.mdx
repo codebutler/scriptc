@@ -2,7 +2,7 @@
 Worker entry points must resolve at build time: use a source-relative `new URL("./worker.ts", import.meta.url)`, the current module URL, an absolute path, or CommonJS `__filename`.
 Each worker initializes its own module state, event loop, environment snapshot, and reference-counted heap.
 Nested workers inherit their parent's environment snapshot.
-Supported constructor options are `workerData`, `argv`, a `transferList` of MessagePorts, `name` (reported by `threadName` and `worker.threadName`), `stdout`, `stderr` and `stdin`, and `resourceLimits.stackSizeMb`, which sets the worker thread's stack size (at least 192 KiB; without it a worker's stack is 8 MiB, where Node's is 4 MiB).
+Supported constructor options are `workerData`, `argv`, a `transferList` of MessagePorts and fixed-length owned ArrayBuffers, `name` (reported by `threadName` and `worker.threadName`), `stdout`, `stderr` and `stdin`, and `resourceLimits.stackSizeMb`, which sets the worker thread's stack size (at least 192 KiB; without it a worker's stack is 8 MiB, where Node's is 4 MiB).
 The `resourceLimits` heap limits (`maxOldGenerationSizeMb`, `maxYoungGenerationSizeMb`, and `codeRangeSizeMb`), `worker.resourceLimits` while the worker runs, and `resourceLimits` read inside a worker are refused; in the main thread `resourceLimits` is `{}`, and after a worker exits `worker.resourceLimits` is `{}`, as in Node.
 With the `stdout` or `stderr` option, the worker's writes to that stream reach `worker.stdout` or `worker.stderr`, a Readable that ends after the worker's `'exit'` event; its chunks arrive in order with the worker's other events.
 Without the option a worker writes to the process's own output, and reading `worker.stdout` or `worker.stderr` is refused.
@@ -22,7 +22,7 @@ A worker's messages to its parent, and the parent's messages in the worker, also
 `receiveMessageOnPort(parentPort)` in a worker takes the parent's next message.
 A port's `onmessage` property and `addEventListener` are unsupported.
 `BroadcastChannel` delivers each message to every other open channel with the same name, in any thread, as a `'message'` `MessageEvent` through `onmessage` and `addEventListener`; an open channel keeps the process alive until `close()` or `unref()`.
-A `messageerror` event is never dispatched.
+BroadcastChannel does not dispatch `messageerror` events.
 The parent port supports message listeners, `postMessage`, `close`, `start`, `ref`, `unref`, and `hasRef`.
 Messages clone primitives, plain object graphs, arrays, errors, ArrayBuffers, typed arrays, and DataViews, preserving cycles and aliases.
 Program class instances arrive as plain objects with their own data properties, without their prototype, methods, accessors, or private fields, as in Node.
@@ -31,6 +31,14 @@ Program class instances arrive as plain objects with their own data properties, 
 A plain object that the compiler copies into a container with a fixed element type, such as an array literal whose elements all have one shape, is a separate object in the copy, which is not marked.
 Marked objects stay alive until their thread exits.
 A MessagePort travels with a message when the message's transfer list (an array or `{ transfer }`) names it, and the sending port is unusable afterwards; a port in a message without that listing throws `DataCloneError`.
+Fixed-length owned ArrayBuffers in a transfer list move their backing storage without copying; the sender's buffer and all its views detach before the call returns, and the receiver preserves aliases and view offsets.
+An ArrayBuffer listed without appearing in the message still detaches.
+Resizable and externally owned ArrayBuffer transfers are refused.
+The transfer list is snapshotted before message getters run, and validation or graph-cloning errors leave listed buffers attached unless a getter itself detaches them.
+Buffer transfers commit in list order after getters finish, using the final bytes; a getter that marks a later buffer as untransferable can therefore throw after earlier buffers have detached.
+The transfer operation detaches MessagePorts only after all buffer transfers succeed.
+If a getter detaches a listed buffer, its recipient is an attached empty buffer; views whose declared bounds no longer fit cause `receiveMessageOnPort` to throw or asynchronous delivery to emit `messageerror`.
+A Worker constructor whose data contains such an invalid view is refused before starting a child, after the transfer list has committed.
 Other transferable values, functions, proxies, and other native handles are refused.
 SharedArrayBuffers share their backing storage while retaining separate wrappers in each thread.
 Graphs made immutable with `@scriptc/threads` are passed by reference instead of cloned; see [Sharing Data Between Workers](/docs/threads).

@@ -114645,6 +114645,7 @@
           "tests/corpus/5879-worker-stdin.ts",
           "tests/corpus/5990-worker-uncloneable.mjs",
           "tests/corpus/5991-worker-async-dispose.mjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs",
           "tests/corpus/native-worker-clone-errors.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-delayed-messages.ts",
@@ -114660,7 +114661,11 @@
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-terminate-loop.ts",
           "tests/corpus/native-worker-terminate-suspended.ts",
-          "tests/corpus/native-worker-terminate-wait.ts"
+          "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/corpus/worker-arraybuffer-transfer-computed.cjs",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts",
+          "tests/corpus/worker-arraybuffer-transfer-dynamic-import.mjs",
+          "tests/corpus/worker-arraybuffer-transfer.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -114949,7 +114954,8 @@
           "tests/corpus/5793-worker-message-channel.ts",
           "tests/corpus/5796-worker-message-channel.cjs",
           "tests/corpus/5797-worker-message-port-transfer.ts",
-          "tests/corpus/5805-worker-receive-message-parent-port.ts"
+          "tests/corpus/5805-worker-receive-message-parent-port.ts",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -114977,7 +114983,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115032,7 +115039,11 @@
           "tests/corpus/native-worker-message-graphs.ts",
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-clone-errors.ts",
-          "tests/corpus/native-worker-delayed-messages.ts"
+          "tests/corpus/native-worker-delayed-messages.ts",
+          "tests/corpus/worker-arraybuffer-transfer.ts",
+          "tests/corpus/worker-arraybuffer-transfer-computed.cjs",
+          "tests/corpus/worker-arraybuffer-transfer-dynamic-import.mjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115209,7 +115220,8 @@
         "evidence": "compiler-feature:worker_threads.'close'",
         "tests": [
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-messages.ts"
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115236,7 +115248,8 @@
         "evidence": "compiler-feature:worker_threads.'message'",
         "tests": [
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-messages.ts"
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115259,8 +115272,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.'messageerror'",
+        "tests": [
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115288,7 +115306,9 @@
           "tests/corpus/native-worker-messages.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-environment.ts",
-          "tests/corpus/native-worker-roots/main.ts"
+          "tests/corpus/native-worker-roots/main.ts",
+          "tests/corpus/worker-arraybuffer-transfer.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115386,7 +115406,11 @@
           "tests/corpus/native-worker-message-graphs.ts",
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-clone-errors.ts",
-          "tests/corpus/native-worker-delayed-messages.ts"
+          "tests/corpus/native-worker-delayed-messages.ts",
+          "tests/corpus/worker-arraybuffer-transfer.ts",
+          "tests/corpus/worker-arraybuffer-transfer-computed.cjs",
+          "tests/corpus/worker-arraybuffer-transfer-dynamic-import.mjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115723,7 +115747,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115750,7 +115775,8 @@
         "evidence": "compiler-feature:worker_threads.threadName",
         "tests": [
           "tests/corpus/5870-worker-thread-names.ts",
-          "tests/corpus/5871-worker-untransferable.cjs"
+          "tests/corpus/5871-worker-untransferable.cjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -115947,7 +115973,8 @@
         "evidence": "compiler-feature:worker_threads.worker_threads.markAsUntransferable",
         "tests": [
           "tests/corpus/5870-worker-thread-names.ts",
-          "tests/corpus/5871-worker-untransferable.cjs"
+          "tests/corpus/5871-worker-untransferable.cjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -115974,7 +116001,8 @@
         "evidence": "compiler-feature:worker_threads.worker_threads.isMarkedAsUntransferable",
         "tests": [
           "tests/corpus/5870-worker-thread-names.ts",
-          "tests/corpus/5871-worker-untransferable.cjs"
+          "tests/corpus/5871-worker-untransferable.cjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -116075,7 +116103,8 @@
           "tests/corpus/5793-worker-message-channel.ts",
           "tests/corpus/5796-worker-message-channel.cjs",
           "tests/corpus/5797-worker-message-port-transfer.ts",
-          "tests/corpus/5805-worker-receive-message-parent-port.ts"
+          "tests/corpus/5805-worker-receive-message-parent-port.ts",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -116156,7 +116185,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -116184,7 +116214,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -116261,7 +116292,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -116288,7 +116320,8 @@
         "evidence": "compiler-feature:worker_threads.threadName",
         "tests": [
           "tests/corpus/5870-worker-thread-names.ts",
-          "tests/corpus/5871-worker-untransferable.cjs"
+          "tests/corpus/5871-worker-untransferable.cjs",
+          "tests/corpus/message-arraybuffer-transfer-getters.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -116316,7 +116349,8 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/worker-arraybuffer-transfer-data.ts"
         ]
       },
       "anchorSource": "exact"
