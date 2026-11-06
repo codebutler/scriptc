@@ -38,8 +38,10 @@ export function runtimeStaticDefines(lowerer: Lowerer, info: ClassInfo, name: st
  * `binding` is the local that holds the class under its own name (a
  * function-local class declaration's binding, or the inner name of a
  * function-local class expression whose body names itself), declared
- * without a value. It is assigned before any static member is defined, so
- * static initializers and methods read the class through it. */
+ * without a value. A declaration publishes it after static initialization;
+ * the class's inner name uses the receiver while outside helpers retain the
+ * outer binding's temporal dead zone. Named expressions keep their own
+ * initialized binding for static member reads. */
 export function initializeRuntimeStatics(
   lowerer: Lowerer,
   info: ClassInfo,
@@ -50,7 +52,15 @@ export function initializeRuntimeStatics(
     if (!binding) return value;
     return {
       kind: "seqExpr",
-      stmts: [{ kind: "assign", localId: binding.id, value, loc: value.loc }],
+      stmts: [
+        {
+          kind: "assign",
+          localId: binding.id,
+          value,
+          ...(binding.tdz ? { initializes: true as const } : {}),
+          loc: value.loc,
+        },
+      ],
       result: varRef(binding.id, binding.type, value.loc),
       type: binding.type,
       loc: value.loc,
@@ -64,14 +74,32 @@ export function initializeRuntimeStatics(
     !info.localClass && info.base && !info.def.baseValueGlobal
       ? lowerer.coerceToExpected(classValueRef(lowerer, info.base, info.decl!), DYN)
       : dynUndefinedExpr(loc);
+  const declaration =
+    info.localClass && info.decl && ts.isClassDeclaration(info.decl) ? info.decl : undefined;
+  const classSymbol = declaration?.name
+    ? lowerer.checker.getSymbolAtLocation(declaration.name)
+    : undefined;
+  const members = [...(info.runtimeStatics ?? []), ...(info.runtimePrototypeMembers ?? [])];
+  const computedName =
+    classSymbol && members.some((member) => member.name && ts.isComputedPropertyName(member.name))
+      ? lowerer.declareHiddenLocal("%classKeyName", value.type)
+      : undefined;
+  if (computedName) {
+    computedName.boxed = true;
+    computedName.tdz = true;
+  }
   const statements: IrStmt[] = [
     { kind: "varDecl", localId: local.id, init: value, loc },
-    ...(binding
+    ...(computedName
+      ? [{ kind: "varDecl" as const, localId: computedName.id, init: null, loc }]
+      : []),
+    ...(binding && !classSymbol
       ? [
           {
             kind: "assign" as const,
             localId: binding.id,
             value: lowerer.coerceToExpected(receiver, binding.type),
+            ...(binding.tdz ? { initializes: true as const } : {}),
             loc,
           },
         ]
@@ -83,8 +111,11 @@ export function initializeRuntimeStatics(
     },
   ];
   const previousThis = lowerer.ctx.thisLocal;
+  // A declaration's class-name binding is separate from its outer binding.
+  // Keys see its TDZ; static members see the class value. A hoisted helper
+  // outside the class retains the owner's original lexical environment.
+  if (classSymbol) lowerer.scopes.push(new Map([[classSymbol, computedName ?? local]]));
   try {
-    const members = [...(info.runtimeStatics ?? []), ...(info.runtimePrototypeMembers ?? [])];
     const computedKeys = new Map<ts.ClassElement, IrExpr>();
     for (const member of members) {
       if (!member.name || !ts.isComputedPropertyName(member.name)) continue;
@@ -103,6 +134,14 @@ export function initializeRuntimeStatics(
       });
       computedKeys.set(member, varRef(key.id, DYN, locOf(member.name)));
     }
+    if (computedName)
+      statements.push({
+        kind: "assign",
+        localId: computedName.id,
+        value: receiver,
+        initializes: true,
+        loc,
+      });
     lowerer.ctx.thisLocal = local;
     // Methods and accessors exist before any static initializer executes.
     const definitions = members.filter(
@@ -217,7 +256,16 @@ export function initializeRuntimeStatics(
       });
     }
   } finally {
+    if (classSymbol) lowerer.scopes.pop();
     lowerer.ctx.thisLocal = previousThis;
   }
+  if (binding && classSymbol)
+    statements.push({
+      kind: "assign",
+      localId: binding.id,
+      value: lowerer.coerceToExpected(receiver, binding.type),
+      ...(binding.tdz ? { initializes: true as const } : {}),
+      loc,
+    });
   return { kind: "seqExpr", stmts: statements, result: receiver, type: receiver.type, loc };
 }

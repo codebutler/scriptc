@@ -722,6 +722,7 @@ import {
   isBlockedBinding,
   lowerScopedBlock,
   predeclareForwardCapture,
+  predeclareInitializingClassCapture,
   predeclareForwardFnDecl,
   predeclareForwardVar,
   lowerStmt,
@@ -16670,6 +16671,7 @@ export class Lowerer {
 
   resolveKey(symbol: ts.Symbol | undefined, blame?: ts.Node): IrLocal | null {
     const resolved = captureContextBinding(this.fnStack, symbol, (parentEntry, entry) => {
+      if (predeclareInitializingClassCapture(this, symbol, parentEntry)) entry.tdz = true;
       const root = this.runtimeOptionalRootOf(parentEntry);
       if (this.runtimeOptionalStorageLocals.has(root)) this.runtimeOptionalRoots.set(entry, root);
     });

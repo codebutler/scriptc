@@ -1216,6 +1216,29 @@ export function predeclareForwardClass(lowerer: Lowerer, symbol: ts.Symbol): boo
   return false;
 }
 
+/** A class currently being initialized can reach a hoisted helper whose
+ * closure captures the class itself. Allocate its typed TDZ cell before
+ * that closure, then let the declaration initialize the same cell. */
+export function predeclareInitializingClassCapture(
+  lowerer: Lowerer,
+  symbol: ts.Symbol | undefined,
+  local: IrLocal,
+): boolean {
+  const decl = symbol?.valueDeclaration;
+  if (!symbol || !decl || !ts.isClassDeclaration(decl) || local.type.kind !== "classval")
+    return false;
+  for (let i = lowerer.activeStmtLists.length - 1; i >= 0; i--) {
+    const entry = lowerer.activeStmtLists[i]!;
+    if (entry.stmts[entry.index] !== decl || entry.frame.get(symbol) !== local) continue;
+    if (entry.ctx.tdzPredeclared.has(symbol)) return false;
+    local.tdz = true;
+    entry.out.push({ kind: "varDecl", localId: local.id, init: null, loc: locOf(decl) });
+    entry.ctx.tdzPredeclared.set(symbol, local);
+    return true;
+  }
+  return false;
+}
+
 /** The FUNCTION-DECLARATION twin of predeclareForwardCapture: JS hoists a
  * nested `function f() {}` to scope entry — the binding is LIVE from the
  * first statement, so a reference lexically above the declaration in the
@@ -1917,7 +1940,7 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
     const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
     if (pre) {
-      const value = lowerer.coerceToExpected(lowerer.lowerClassExpression(stmt), DYN);
+      const value = lowerer.coerceToExpected(lowerer.lowerClassExpression(stmt), pre.type);
       lowerer.ctx.tdzPredeclared.delete(symbol!);
       return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(stmt) };
     }
@@ -1926,12 +1949,21 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // Static members of a function-local class run while the class value is
     // built and may read the class by name: the class value assigns the
     // binding before them.
-    if (info.localClass && (info.runtimeStatics || info.runtimePrototypeMembers))
+    const beforeStatics = info.localClass && (info.runtimeStatics || info.runtimePrototypeMembers);
+    const init = lowerer.lowerClassExpression(stmt, beforeStatics ? local : undefined);
+    // Lowering the class body may have reached a forward helper that
+    // captured this binding and allocated its cell before the helper.
+    if (symbol && lowerer.ctx.tdzPredeclared.get(symbol) === local) {
+      lowerer.ctx.tdzPredeclared.delete(symbol);
+      return beforeStatics
+        ? { kind: "exprStmt", expr: init, loc: locOf(stmt) }
+        : { kind: "assign", localId: local.id, value: init, initializes: true, loc: locOf(stmt) };
+    }
+    if (beforeStatics)
       return [
         { kind: "varDecl", localId: local.id, init: null, loc: locOf(stmt) },
-        { kind: "exprStmt", expr: lowerer.lowerClassExpression(stmt, local), loc: locOf(stmt) },
+        { kind: "exprStmt", expr: init, loc: locOf(stmt) },
       ];
-    const init = lowerer.lowerClassExpression(stmt);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(stmt) };
   }
   if (ts.isVariableStatement(stmt)) {
