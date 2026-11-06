@@ -2943,9 +2943,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // — fixed shape, literal-index access, length = the arity constant
   // (SEMANTICS.md). The flag keeps tuple shapes distinct from numeric-keyed
   // object records (JSON must serialize a tuple as an ARRAY) and is why
-  // interning happens through the tuple-aware path. Optional/rest elements
-  // have no fixed shape and stay unmapped; element types follow record-field
-  // rules (no void/dyn).
+  // interning happens through the tuple-aware path. Bounded optional tuples
+  // use checked arrays below; other rest layouts retain their existing fence.
+  // Required element types follow record-field rules.
   if (checker.isTupleType(widened)) {
     const ref = widened as ts.TupleTypeReference;
     // elementFlags live on the tuple SHAPE: a direct tuple type carries
@@ -2992,7 +2992,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         return arrayOf(first);
       return null;
     }
-    // Optional/rest elements have no fixed native tuple layout.
+    // Optional positions have a variable length: an omitted trailing
+    // element differs from an explicit undefined. Use the checked array
+    // representation, preserving both holes and aliases of typed tuples.
+    // Native tuple sources retain their existing fixed-layout write guards.
+    if (
+      flags.some((flag) => (flag & ts.ElementFlags.Optional) !== 0) &&
+      flags.every((flag) => (flag & (ts.ElementFlags.Required | ts.ElementFlags.Optional)) !== 0)
+    ) {
+      return DYN;
+    }
+    // Other rest elements have no admitted native tuple layout.
     if (tupleShape.elementFlags.some((f) => !(f & ts.ElementFlags.Required))) {
       return null;
     }
@@ -6769,6 +6779,11 @@ function signatureParameterTypes(sig: ts.Signature, ctx: TypeMapperCtx): ts.Type
  * TypeScript treats `(...a: [A, B]) => R` and `(a: A, b: B) => R` alike). */
 export function restTupleElementTypes(type: ts.Type, ctx: TypeMapperCtx): ts.Type[] | null {
   return restTupleElements(type, ctx)?.map((e) => e.type) ?? null;
+}
+
+/** A bounded tuple whose actual length can omit trailing positions. */
+export function optionalTupleType(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  return restTupleElements(type, ctx)?.some((element) => element.optional) === true;
 }
 
 /** restTupleElementTypes with each position's optionality: a rest tuple

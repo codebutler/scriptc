@@ -314,6 +314,7 @@ import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
 import {
   spreadNeedsRuntimeArity,
+  hasOptionalTupleSpreads,
   completeFuncValueArgs,
   checkedRestCallArgs,
   lowerSpreadArgsCall,
@@ -10806,6 +10807,23 @@ export function lowerRecordFieldCall(
     )
       boxedResult = lowerer.coerceInto(call, boxedResult, resolved);
     return boxedResult;
+  }
+  if (hasOptionalTupleSpreads(lowerer, call)) {
+    const spread = lowerSpreadArgsCall(lowerer, call, callee, loc);
+    if (spread?.kind === "dynCall") {
+      let result: IrExpr = receiver ? { ...spread, receiver } : spread;
+      if (callee.type.ret.kind !== "void")
+        result = lowerer.coerceInto(call, result, callee.type.ret);
+      const memberType = lowerer.typeOf(access);
+      if (isGenericCallableMemberType(memberType, lowerer.checker)) {
+        const resolved = lowerer.irTypeOf(call);
+        if (resolved.kind !== "void") result = lowerer.coerceInto(call, result, resolved);
+      } else if (isOverloadedMemberAccess(lowerer, access)) {
+        const resolved = resolvedOverloadResultType(lowerer, call);
+        if (resolved.kind !== "void") result = lowerer.coerceInto(call, result, resolved);
+      }
+      return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
+    }
   }
   const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
   let result: IrExpr = {
