@@ -147,6 +147,7 @@ import { objectFactoryGlobalType } from "./object-factory-new.js";
 import { streamClassAliasDecl } from "./lower-stream.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
+import { isJsFreshLiteralFreeze } from "./frozen-records.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
 import { isPromisePrototypeRead } from "./expressions/property-access.js";
 import {
@@ -2241,7 +2242,9 @@ export function collectGlobals(
           // callable ABI. Preserve checked-native values in shared storage;
           // adapting the loader to (string) would replace its validation.
           // An inferred Promise.prototype binding holds an ordinary object
-          // (isPromisePrototypeRead), in TypeScript as well.
+          // (isPromisePrototypeRead), in TypeScript as well. Fresh frozen JS
+          // literals need their final storage before deferred initializers
+          // and readers are emitted; widening afterward leaves stale IR.
           const initializer = decl.initializer ? stripTypeCasts(decl.initializer) : undefined;
           if (
             (nameNode === decl.name &&
@@ -2251,6 +2254,9 @@ export function collectGlobals(
               nameNode === decl.name &&
               initializer &&
               (isNativeBuiltinValueInitializer(lowerer, initializer) ||
+                (!decl.type &&
+                  !hasJsTypeAnnotation(decl) &&
+                  isJsFreshLiteralFreeze(lowerer, initializer)) ||
                 (!decl.type &&
                   !hasJsTypeAnnotation(decl) &&
                   lowerer.mapTypeOf(lowerer.typeOf(nameNode))?.kind === "date") ||

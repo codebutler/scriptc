@@ -301,7 +301,12 @@ import {
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
 import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
 import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
-import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
+import {
+  freezableRecordType,
+  isJsFreshLiteralFreeze,
+  lowerNativeFreeze,
+  noteUntypedIntegrity,
+} from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
@@ -9592,11 +9597,9 @@ function lowerObjectStaticCall(
     let inner: ts.Expression = argNode;
     while (ts.isParenthesizedExpression(inner) || ts.isAsExpression(inner))
       inner = inner.expression;
-    const value =
-      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
-      (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner))
-        ? lowerer.lowerExprExpecting(argNode, DYN)
-        : lowerer.lowerExpr(argNode);
+    const value = isJsFreshLiteralFreeze(lowerer, call)
+      ? lowerer.lowerExprExpecting(argNode, DYN)
+      : lowerer.lowerExpr(argNode);
     if (value.type.kind === "dyn") {
       noteUntypedIntegrity(lowerer, argNode);
       return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };

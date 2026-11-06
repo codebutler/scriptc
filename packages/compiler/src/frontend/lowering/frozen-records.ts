@@ -14,6 +14,7 @@ import { numLit, strLit, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
 import { recordHasOwnHelper } from "./lower-calls.js";
+import { isJsSourceFile } from "../program.js";
 import { isStrictCode } from "./strict-mode.js";
 
 /* Object.freeze of records and arrays that other references can still
@@ -27,6 +28,25 @@ import { isStrictCode } from "./strict-mode.js";
  * freezes, seals or prevents extensions of untyped values
  * (noteUntypedIntegrity), when a value of it or of a type reaching it can be
  * held as a live untyped reference. */
+
+/** A fresh JavaScript literal frozen by the builtin retains checked object
+ * identity. Collection and call lowering must choose the same storage before
+ * deferred initializers or readers are lowered. */
+export function isJsFreshLiteralFreeze(lowerer: Lowerer, expression: ts.Expression): boolean {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expression))) return false;
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (
+    !ts.isCallExpression(expression) ||
+    expression.questionDotToken ||
+    !ts.isPropertyAccessExpression(expression.expression) ||
+    lowerer.stdlibGlobalMember(expression.expression, "Object") !== "freeze" ||
+    expression.arguments.nodes.length !== 1
+  )
+    return false;
+  let value = expression.arguments.nodes[0]!;
+  while (ts.isParenthesizedExpression(value) || ts.isAsExpression(value)) value = value.expression;
+  return ts.isObjectLiteralExpression(value) || ts.isArrayLiteralExpression(value);
+}
 
 type RecordType = Extract<IrType, { kind: "record" }>;
 type RecordWrite = Extract<IrStmt, { kind: "recordSet" | "recordKeySet" | "recordKeyDelete" }>;
