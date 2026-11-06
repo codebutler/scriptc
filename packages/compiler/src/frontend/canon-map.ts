@@ -40,7 +40,49 @@ export function mapCanonical(
   depth = 0,
   notes?: CanonMapNotes,
 ): IrType | null {
+  return mapCanonicalMemo(c, ctx, depth, notes, new Map());
+}
+
+interface CanonMapping {
+  type: IrType | null;
+  collapsedToDynamic: boolean;
+}
+
+type CanonMemo = Map<Canon, Map<number, CanonMapping>>;
+
+/** A canonical graph shares recursive members. Revisit a completed node at
+ * most once per depth within this mapping's context. Depth remains part of
+ * the key because the existing limit can refuse a deep occurrence while a
+ * shallower occurrence still maps. The memo never escapes one root call. */
+function mapCanonicalMemo(
+  c: Canon,
+  ctx: TypeMapperCtx,
+  depth: number,
+  notes: CanonMapNotes | undefined,
+  memo: CanonMemo,
+): IrType | null {
   if (depth > MAX_DEPTH) return null;
+  const known = memo.get(c)?.get(depth);
+  if (known !== undefined) {
+    if (notes !== undefined && known.collapsedToDynamic) notes.collapsedToDynamic = true;
+    return known.type;
+  }
+  const localNotes: CanonMapNotes = { collapsedToDynamic: false };
+  const type = mapCanonicalInner(c, ctx, depth, localNotes, memo);
+  let byDepth = memo.get(c);
+  if (byDepth === undefined) memo.set(c, (byDepth = new Map()));
+  byDepth.set(depth, { type, collapsedToDynamic: localNotes.collapsedToDynamic });
+  if (notes !== undefined && localNotes.collapsedToDynamic) notes.collapsedToDynamic = true;
+  return type;
+}
+
+function mapCanonicalInner(
+  c: Canon,
+  ctx: TypeMapperCtx,
+  depth: number,
+  notes: CanonMapNotes,
+  memo: CanonMemo,
+): IrType | null {
   const viaChecker = (): IrType | null => (c.src === undefined ? null : mapType(c.src, ctx));
   switch (c.k) {
     case "prim":
@@ -68,13 +110,13 @@ export function mapCanonical(
     case "tuple":
       return viaChecker();
     case "array": {
-      const elem = mapCanonical(c.elem, ctx, depth + 1, notes);
+      const elem = mapCanonicalMemo(c.elem, ctx, depth + 1, notes, memo);
       return elem === null ? null : { kind: "array", elem };
     }
     case "union": {
       const byKey = new Map<string, IrType>();
       for (const arm of c.arms) {
-        const mapped = mapCanonical(arm, ctx, depth + 1, notes);
+        const mapped = mapCanonicalMemo(arm, ctx, depth + 1, notes, memo);
         if (mapped === null || mapped.kind === "void") return null;
         if (mapped.kind === "union") {
           const def = ctx.unions.get(mapped.unionId);
@@ -102,7 +144,7 @@ export function mapCanonical(
       if (props.some((p) => p.accessor)) return viaChecker();
       // `{}` holds any non-nullish value: the checked dynamic, as mapType.
       if (props.length === 0) return DYN;
-      const structural = mapCanonicalRecord(props, ctx, depth, notes);
+      const structural = mapCanonicalRecord(props, ctx, depth, notes, memo);
       // An object whose members do not map structurally (an interface over
       // Map or Set, methods) keeps its per-type recognition.
       return structural ?? viaChecker();
@@ -117,10 +159,11 @@ function mapCanonicalRecord(
   ctx: TypeMapperCtx,
   depth: number,
   notes: CanonMapNotes | undefined,
+  memo: CanonMemo,
 ): IrType | null {
   const fields: { name: string; type: IrType }[] = [];
   for (const p of props) {
-    let t = mapCanonical(p.type(), ctx, depth + 1, notes);
+    let t = mapCanonicalMemo(p.type(), ctx, depth + 1, notes, memo);
     if (t === null) return null;
     if (p.optional && t.kind !== "dyn") {
       const armed = withUndefinedArm(t, ctx.unions);
