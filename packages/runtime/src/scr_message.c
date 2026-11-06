@@ -1025,7 +1025,9 @@ bool scr_message_views_valid(const ScrMessage *message) {
   for (size_t i = 0; i < message->count; i++) {
     const ScrMessageNode *node = &message->nodes[i];
     if (node->kind != SCR_MESSAGE_BYTES) continue;
-    size_t length = message->nodes[node->v.view.storage].v.text.length;
+    const ScrMessageNode *storage = &message->nodes[node->v.view.storage];
+    if (!storage->v.text.transferred) continue;
+    size_t length = storage->v.text.length;
     size_t width = scr_bytes_elem_size((ScrBytesElem)node->element);
     if (node->v.view.offset > length || node->v.view.length > (length - node->v.view.offset) / width)
       return false;
