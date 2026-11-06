@@ -24,6 +24,16 @@ function selected(
   return matches[0];
 }
 
+test("worker buffer transfers select the optional object-model message build", () => {
+  expect(selected("scr_message.c", { workers: true, jsObjectModel: false }).defines).toEqual([
+    "SCR_WORKERS",
+  ]);
+  expect(selected("scr_message.c", { workers: true, jsObjectModel: true }).defines).toEqual([
+    "SCR_WORKERS",
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+});
+
 test("the typed stdio write slot selects the events build that carries it", () => {
   const plain = { stdioExtended: false, nodeIsland: false, workers: false };
   // Alone, the write slot selects its own build.

@@ -8,9 +8,11 @@
  * values; release the message separately after delivery or cancellation. */
 typedef struct ScrMessage ScrMessage;
 ScrMessage *scr_message_encode(const ScrDyn *value);
-/* postMessage(value, transferList): the listed MessagePorts move with the
- * message (a port in the value that is not listed throws DataCloneError);
- * transfer is NULL or a dyn array. */
+/* postMessage(value, transferList): listed MessagePorts and fixed owned
+ * ArrayBuffer allocations move with the message. A port in the value that
+ * is not listed throws DataCloneError. Transfer is NULL or a dyn array;
+ * its entries are snapshotted before message getters run. Messages with
+ * transfers decode once; cancellation releases undelivered storage. */
 ScrMessage *scr_message_encode_transfer(const ScrDyn *value, const ScrDyn *transfer);
 /* A worker's uncaught exception, as Node's error serializer sends it: an
  * Error keeps the nearest of Error and its six native subclasses, and its
@@ -33,6 +35,8 @@ typedef struct {
 } ScrMessagePortOps;
 extern const ScrMessagePortOps *scr_message_port_ops;
 ScrDyn *scr_message_decode(const ScrMessage *message);
+/* Bounds-only validation, without adopting any transferred storage. */
+bool scr_message_views_valid(const ScrMessage *message);
 void scr_message_free(ScrMessage *message);
 
 #endif

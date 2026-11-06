@@ -232,7 +232,7 @@ import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
-import { installMutableBuffersArm } from "./buffers.js";
+import { hasWorkerBufferTransfers, installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
@@ -5451,6 +5451,7 @@ export class Lowerer {
       ? (sym, answer) => this.verifySymbolProvenanceAnswer(sym, answer)
       : undefined;
     this.checker = program.getTypeChecker();
+    this.buffersMutable = hasWorkerBufferTransfers(program, moduleOrder);
     const islands = this.nodeIslands;
     const shadow = canonShadowHook(this.checker);
     this.typeCtx = {

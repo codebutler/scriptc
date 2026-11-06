@@ -615,6 +615,13 @@ static void scr_worker_port_emit(ScrWorkerView *view, const char *event, ScrDyn 
   scr_str_release(name);
 }
 
+static ScrDyn *scr_worker_message_error(void) {
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *error = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  return error;
+}
+
 /* The channel ports' turn, one event per call, in Node's phase order:
  * - the close phase: ports this thread closed, the latest close() first
  *   (libuv's close callbacks), each telling its other end;
@@ -683,7 +690,10 @@ static bool scr_channel_dispatch(void) {
       return true;
     }
     ScrDyn *argument = event->message ? scr_message_decode(event->message) : NULL;
-    if (argument && view->broadcast) {
+    if (!argument && scr_exc_pending()) {
+      argument = scr_worker_message_error();
+      scr_worker_port_emit(view, "messageerror", argument);
+    } else if (argument && view->broadcast) {
       ScrDyn *self = scr_dyn_new_handle(view, SCR_DYNH_BROADCAST_CHANNEL);
       scr_et_broadcast_ops->dispatch_message(view->et, self, argument);
       scr_dyn_release(self);
@@ -849,6 +859,10 @@ static void scr_worker_dispatch(void) {
     event->kind == SCR_WORKER_EXIT ? "exit" : event->kind == SCR_WORKER_ERROR ? "error" : "message";
   ScrDyn *argument = event->message ? scr_message_decode(event->message) :
     event->kind == SCR_WORKER_EXIT ? scr_dyn_new_num(event->code) : NULL;
+  if (!argument && event->kind == SCR_WORKER_MESSAGE && scr_exc_pending()) {
+    argument = scr_worker_message_error();
+    event_name = "messageerror";
+  }
   if (event->kind == SCR_WORKER_EXIT) {
     scr_worker_thread_join(view->thread);
     view->closed = true;
@@ -1433,6 +1447,12 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   if (capture & 4) scr_worker_set_stdin_attach(scr_worker_stdin_attach);
   scr_dyn_release(transfer);
   if (!wire) { scr_arr_release(arguments); scr_str_release(thread_name); return NULL; }
+  if (!scr_message_views_valid(wire)) {
+    scr_message_free(wire);
+    scr_arr_release(arguments);
+    scr_str_release(thread_name);
+    return scr_worker_refusal("Worker constructor data with a view detached during serialization is not supported yet");
+  }
   ScrWorkerThread *thread = scr_worker_thread_start(sc_worker_entry, (uint32_t)root, wire, environment_data,
                                                     scr_worker_events, arguments, stack_size, thread_name,
                                                     capture);

@@ -582,6 +582,42 @@ ScrDyn *scr_js_buffer_new_growable(ScrDyn *length, ScrDyn *options) {
 
 /* ── the table ───────────────────────────────────────────────────────── */
 
+static bool scr_js_buffer_message_take(ScrBytes *owner, uint8_t **data, size_t *length) {
+  if (owner->untransferable) {
+    static const char message[] = "Provided key doesn't match [[ArrayBufferDetachKey]]";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
+  ScrJsBufferOwner *state = scr_js_buffer_owner_state(owner, true);
+  if (state->detached) {
+    /* A message getter already transferred it. Node sends an attached,
+     * empty destination, without touching the first destination's bytes. */
+    *data = calloc(1, 1);
+    if (!*data) scr_trap("scriptc: out of memory\n");
+    *length = 0;
+    return true;
+  }
+  *data = owner->data;
+  *length = (size_t)scr_bytes_byte_len(owner);
+  scr_array_buffers_sub(false, scr_bytes_held(owner));
+  scr_bytes_set_held(owner, 0);
+  owner->external = true;
+  owner->len = 0;
+  state->detached = true;
+  scr_js_buffer_refresh(state);
+  return true;
+}
+
+static void scr_js_buffer_message_view_bounds(const ScrBytes *view, size_t *offset, size_t *length) {
+  ScrBytes *owner = view->backing ? view->backing : (ScrBytes *)view;
+  ScrJsBufferOwner *state = scr_js_buffer_owner_state(owner, false);
+  if (!state || !state->detached) return;
+  ScrJsBufferView *node = scr_js_buffer_view_node(view);
+  *offset = node ? node->offset : 0;
+  *length = node && node->count != SIZE_MAX ? node->count :
+    (state->capacity - *offset) / scr_bytes_elem_size(view->elem);
+}
+
 static const ScrJsBufferOps scr_js_buffer_ops_table = {
   &scr_js_buffer_view_register,
   &scr_js_buffer_disposed,
@@ -594,6 +630,8 @@ static const ScrJsBufferOps scr_js_buffer_ops_table = {
   &scr_js_buffer_transfer,
   &scr_js_buffer_resize,
   &scr_js_buffer_grow,
+  &scr_js_buffer_message_take,
+  &scr_js_buffer_message_view_bounds,
 };
 
 /* arrayBuffer.armMutable, lowered into the top of %main: from here on the

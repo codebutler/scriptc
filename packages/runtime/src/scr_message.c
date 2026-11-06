@@ -40,6 +40,10 @@ typedef struct {
       char *data;
       ScrSharedBytes *shared;
       size_t length;
+      /* Pending until all getters finish; never crosses the queue. */
+      const ScrBytes *transfer_owner;
+      bool transferred;
+      bool adopted;
     } text;
     /* BYTES and ARRAY_BUFFER: the STORAGE node; BYTES: the view. */
     struct {
@@ -288,7 +292,16 @@ static size_t scr_message_storage(ScrMessageEncoder *encoder, const ScrBytes *by
   size_t size = scr_bytes_elem_size(owner->elem);
   if (owner->len > SIZE_MAX / size) scr_trap("scriptc: message too large\n");
   storage->v.text.length = owner->len * size;
-  if (owner->shared) storage->v.text.shared = scr_shared_retain(owner->shared);
+  bool transferred = false;
+  for (size_t i = 0; encoder->transfer && i < encoder->transfer->v.arr.len; i++) {
+    const ScrDyn *item = encoder->transfer->v.arr.items[i];
+    if (scr_buffer_storage_is(item) && item->v.handle.ptr == owner) transferred = true;
+  }
+  if (transferred) {
+    storage->v.text.transfer_owner = owner;
+    storage->v.text.transferred = true;
+    encoder->adopts = true;
+  } else if (owner->shared) storage->v.text.shared = scr_shared_retain(owner->shared);
   else storage->v.text.data = scr_message_copy(owner->data, storage->v.text.length);
   encoder->storage = encoder->releases = true;
   return node;
@@ -547,6 +560,10 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     node->element = (unsigned char)bytes->elem;
     node->v.view.length = bytes->len;
     node->v.view.offset = (size_t)(bytes->data - (bytes->backing ? bytes->backing : bytes)->data);
+#ifdef SCR_JS_OBJECT_MODEL
+    if (!buffer && encoder->nodes[storage].v.text.transferred && scr_js_buffer_ops)
+      scr_js_buffer_ops->message_view_bounds(bytes, &node->v.view.offset, &node->v.view.length);
+#endif
     node->data_view = bytes->is_data_view;
     break;
   }
@@ -744,25 +761,92 @@ ScrMessage *scr_message_encode_uncaught(const ScrDyn *value) {
 ScrMessage *scr_message_encode_transfer(const ScrDyn *value, const ScrDyn *transfer) {
   if (!transfer || transfer->kind != SCR_DYN_ARR || transfer->v.arr.len == 0)
     return scr_message_encode_with(value, NULL);
-  for (size_t i = 0; i < transfer->v.arr.len; i++) {
-    const ScrDyn *item = transfer->v.arr.items[i];
+  /* Retain the entries, not the mutable array: message getters may replace
+   * list items or release their last other reference. */
+  ScrDyn *list = scr_dyn_new_arr();
+  for (size_t i = 0; i < transfer->v.arr.len; i++)
+    scr_dyn_arr_push(list, scr_dyn_retain(transfer->v.arr.items[i] ? transfer->v.arr.items[i] : scr_dyn_undefined()));
+  for (size_t i = 0; i < list->v.arr.len; i++) {
+    const ScrDyn *item = list->v.arr.items[i];
+    bool buffer = scr_buffer_storage_is(item);
+    if (buffer && !((ScrBytes *)item->v.handle.ptr)->shared) {
+      ScrBytes *owner = item->v.handle.ptr;
+      for (size_t j = 0; j < i; j++) {
+        const ScrDyn *prior = list->v.arr.items[j];
+        if (scr_buffer_storage_is(prior) && prior->v.handle.ptr == owner) {
+          scr_throw_domex("DataCloneError", "Transfer list contains duplicate ArrayBuffer");
+          goto invalid;
+        }
+      }
+#ifdef SCR_JS_OBJECT_MODEL
+      if (owner->untransferable || (scr_js_buffer_ops && scr_js_buffer_ops->owner_detached(owner))) {
+        scr_throw_domex("DataCloneError", "Cannot transfer object of unsupported type.");
+        goto invalid;
+      }
+      if (scr_js_buffer_ops && !scr_js_buffer_ops->owner_resizable(owner) && !owner->external)
+        continue;
+#endif
+      static const char text[] = "Worker transfer requires fixed owned ArrayBuffer storage and the mutable-buffers registry";
+      ScrStr *m = scr_str_new(text, sizeof text - 1);
+      scr_throw_lowering_fence(m);
+      scr_str_release(m);
+      goto invalid;
+    }
     int side = 0;
     ScrChannel *channel = item && item->kind == SCR_DYN_HANDLE && scr_message_port_ops
         ? scr_message_port_ops->channel_of(item, &side) : NULL;
     if (!channel) {
-      static const char text[] = "Transfer lists with values other than MessagePorts are not supported yet";
-      ScrStr *m = scr_str_new(text, sizeof text - 1);
-      scr_throw_lowering_fence(m);
-      scr_str_release(m);
-      return NULL;
+      scr_throw_domex("DataCloneError", scr_message_port_ops && scr_message_port_ops->is_port(item)
+        ? "MessagePort in transfer list is already detached" : "Found invalid value in transferList.");
+      goto invalid;
     }
     scr_message_port_ops->release(channel);
+    for (size_t j = 0; j < i; j++) {
+      const ScrDyn *prior = list->v.arr.items[j];
+      if (prior && prior->kind == SCR_DYN_HANDLE && prior->v.handle.ptr == item->v.handle.ptr) {
+        scr_throw_domex("DataCloneError", "Transfer list contains duplicate MessagePort");
+        goto invalid;
+      }
+    }
   }
-  ScrMessage *message = scr_message_encode_with(value, transfer);
-  if (!message) return NULL;
-  /* the listed ports now belong to the message */
-  for (size_t i = 0; i < transfer->v.arr.len; i++) scr_message_port_ops->detach(transfer->v.arr.items[i]);
+  ScrMessage *message = scr_message_encode_with(value, list);
+  if (!message) goto invalid;
+  /* Validation and graph failures are atomic. Late state changes from
+   * getters commit in list order, including detachment of unused entries. */
+  for (size_t i = 0; i < list->v.arr.len; i++) {
+    const ScrDyn *item = list->v.arr.items[i];
+    if (!scr_buffer_storage_is(item)) continue;
+#ifdef SCR_JS_OBJECT_MODEL
+    ScrBytes *owner = item->v.handle.ptr;
+    uint8_t *data = NULL;
+    size_t length = 0;
+    if (!scr_js_buffer_ops->message_take(owner, &data, &length)) {
+      scr_message_free(message);
+      goto invalid;
+    }
+    bool used = false;
+    for (size_t n = 0; n < message->count; n++) {
+      ScrMessageNode *node = &message->nodes[n];
+      if (node->kind != SCR_MESSAGE_STORAGE || node->v.text.transfer_owner != owner) continue;
+      node->v.text.transfer_owner = NULL;
+      node->v.text.data = (char *)data;
+      node->v.text.length = length;
+      used = true;
+    }
+    if (!used) free(data);
+#endif
+  }
+  /* Node commits ports only after all ArrayBuffer detaches succeed, even
+   * when a port preceded a buffer that a getter marked untransferable. */
+  for (size_t i = 0; i < list->v.arr.len; i++) {
+    const ScrDyn *item = list->v.arr.items[i];
+    if (!scr_buffer_storage_is(item)) scr_message_port_ops->detach(item);
+  }
+  scr_dyn_release(list);
   return message;
+invalid:
+  scr_dyn_release(list);
+  return NULL;
 }
 
 static ScrMessage *scr_message_encode_with(const ScrDyn *value, const ScrDyn *transfer) {
@@ -935,21 +1019,52 @@ static void scr_message_tag_document(const ScrMessage *message, ScrDyn **values)
   scr_dyn_region_close(region);
 }
 
+bool scr_message_views_valid(const ScrMessage *message) {
+  /* A getter can transfer a listed owner after its view was serialized.
+   * Node accepts the send, then rejects the stale view at deserialization. */
+  for (size_t i = 0; i < message->count; i++) {
+    const ScrMessageNode *node = &message->nodes[i];
+    if (node->kind != SCR_MESSAGE_BYTES) continue;
+    size_t length = message->nodes[node->v.view.storage].v.text.length;
+    size_t width = scr_bytes_elem_size((ScrBytesElem)node->element);
+    if (node->v.view.offset > length || node->v.view.length > (length - node->v.view.offset) / width)
+      return false;
+  }
+  return true;
+}
+
 ScrDyn *scr_message_decode(const ScrMessage *message) {
   if (message->count == 1 && message->nodes[0].kind == SCR_MESSAGE_PUBLISHED)
     return scr_dyn_retain(message->nodes[0].v.published);
+  if (!scr_message_views_valid(message)) {
+    static const char text[] = "Unable to deserialize cloned data.";
+    scr_throw_error_msg(SCR_ERR_ERROR, text, sizeof text - 1);
+    return NULL;
+  }
+  for (size_t i = 0; i < message->count; i++) {
+    const ScrMessageNode *node = &message->nodes[i];
+    if (node->kind == SCR_MESSAGE_STORAGE && node->v.text.adopted) {
+      static const char text[] = "Message ArrayBuffer storage has already been adopted";
+      scr_throw_error_msg(SCR_ERR_ERROR, text, sizeof text - 1);
+      return NULL;
+    }
+  }
   ScrDyn *inline_values[SCR_MESSAGE_INLINE];
   ScrDyn **values = message->count <= SCR_MESSAGE_INLINE
       ? inline_values : scr_message_alloc(message->count, sizeof(*values));
   memset(values, 0, message->count * sizeof(*values));
   ScrBytes **storage = message->storage ? scr_message_alloc(message->count, sizeof(*storage)) : NULL;
   for (size_t i = 0; storage && i < message->count; i++) {
-    const ScrMessageNode *node = &message->nodes[i];
+    ScrMessageNode *node = &message->nodes[i];
     if (node->kind != SCR_MESSAGE_STORAGE) continue;
-    storage[i] = node->v.text.shared ? scr_shared_wrap(node->v.text.shared)
+    if (node->v.text.transferred) {
+      storage[i] = scr_bytes_take_data((uint8_t *)node->v.text.data, node->v.text.length);
+      node->v.text.data = NULL;
+      node->v.text.adopted = true;
+    } else storage[i] = node->v.text.shared ? scr_shared_wrap(node->v.text.shared)
                                      : scr_bytes_new(SCR_BYTES_U8, (double)node->v.text.length);
     if (!storage[i]) goto done;
-    if (!node->v.text.shared && node->v.text.length)
+    if (!node->v.text.shared && !node->v.text.transferred && node->v.text.length)
       memcpy(storage[i]->data, node->v.text.data, node->v.text.length);
   }
   for (size_t i = 0; i < message->count; i++) {
