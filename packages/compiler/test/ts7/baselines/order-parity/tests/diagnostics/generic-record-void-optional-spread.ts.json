@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/generic-record-void-optional-spread.ts"
+ ],
+ "diags": []
+}

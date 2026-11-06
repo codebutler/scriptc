@@ -3775,7 +3775,7 @@ export class LlDyn {
           throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
         if (host.recordViews?.sourceTargets.has(t.shapeId)) {
           host.declare(`declare ptr @scr_record_source_view_source(ptr)`);
-          host.declare(`declare ptr @scr_dyn_retain(ptr)`);
+          host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
           const source = B.tmp(),
             present = B.tmp();
           B.line(`${source} = call ptr @scr_record_source_view_source(ptr %v)`);
@@ -3785,7 +3785,7 @@ export class LlDyn {
           B.condBr(present, yes, no);
           B.startBlock(yes);
           const owned = B.tmp();
-          B.line(`${owned} = call ptr @scr_dyn_retain(ptr ${source})`);
+          B.line(`${owned} = call ptr @scr_dyn_retain_v(ptr ${source})`);
           B.terminate(`ret ptr ${owned}`);
           B.startBlock(no);
         }

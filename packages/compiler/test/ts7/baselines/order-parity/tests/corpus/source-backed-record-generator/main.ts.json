@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/source-backed-record-generator/library.mjs",
+  "<repo>/tests/corpus/source-backed-record-generator/main.ts"
+ ],
+ "diags": []
+}
