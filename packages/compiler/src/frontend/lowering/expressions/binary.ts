@@ -4461,11 +4461,10 @@ function lowerWebAssemblyTypeofTest(
  * arms whose static typeof answer equals the literal form a tag set, and
  * the test is a runtime tag test — one `unionIsTag` for a single matching
  * arm (the operand embeds once, so even effectful operands compose), a
- * short-circuit chain for several (pure reads only — the operand rides
- * every test, exactly the `== null` composition rule). When every arm
- * answers the same way the comparison is statically decided and folds to
- * a bool literal — dropping only a side-effect-free read, the same
- * trust-the-checker bet as lowerUnitComparison. tsc's control-flow
+ * short-circuit chain for several. A non-repeatable operand is saved once,
+ * as in the `== null` composition rule. When every arm answers the same
+ * way, the comparison folds to a bool literal after evaluating the operand
+ * for its effects. tsc's control-flow
  * narrowing then types the branches, and reads bridge through
  * maybeNarrow's unionNarrow as usual. Null when neither side is a typeof
  * over a union-typed operand or the literal side isn't a literal (the
@@ -4482,7 +4481,7 @@ function lowerUnionTypeofTest(
     if (stored === null && lowerer.mapTypeOf(lowerer.typeOf(a.expression))?.kind !== "union")
       continue;
     if (!ts.isStringLiteral(b)) continue; // bare-typeof + strEq handles pure operands
-    const value = stored ?? lowerer.lowerExpr(a.expression);
+    let value = stored ?? lowerer.lowerExpr(a.expression);
     if (value.type.kind !== "union") continue; // defensive: an already-narrowed use
     const unionId = value.type.unionId;
     const def = lowerer.unions.get(unionId);
@@ -4490,14 +4489,11 @@ function lowerUnionTypeofTest(
     if (!def || !answers || !answers.every((s): s is string => s !== null)) continue;
     const tags = answers.flatMap((s, i) => (s === b.text ? [i] : []));
     if (tags.length === 0 || tags.length === def.arms.length) {
-      if (!isSafeToRepeat(value)) {
-        lowerer.unsupported(
-          "SC1090",
-          expr,
-          "statically-decided 'typeof' tests over effectful operands (bind the value to a const first)",
-        );
-      }
-      return { kind: "boolLit", value: (tags.length !== 0) !== negated, type: BOOL, loc };
+      return afterEvaluating(
+        value,
+        { kind: "boolLit", value: (tags.length !== 0) !== negated, type: BOOL, loc },
+        loc,
+      );
     }
     const isTag = (tag: number): IrExpr => ({
       kind: "unionIsTag",
@@ -4509,12 +4505,11 @@ function lowerUnionTypeofTest(
       loc,
     });
     if (tags.length === 1) return isTag(tags[0]!);
+    let prefix: IrStmt[] = [];
     if (!isSafeToRepeat(value)) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "'typeof' tests matching several union arms over operands that aren't plain reads (bind the value to a const first)",
-      );
+      const tmp = lowerer.declareHiddenLocal("%typeof", value.type);
+      prefix = [{ kind: "varDecl", localId: tmp.id, init: value, loc }];
+      value = varRef(tmp.id, value.type, loc);
     }
     // Tag-in-set as a short-circuit chain (De Morgan for `!==`).
     let acc = isTag(tags[0]!);
@@ -4528,7 +4523,9 @@ function lowerUnionTypeofTest(
         loc,
       };
     }
-    return acc;
+    return prefix.length === 0
+      ? acc
+      : { kind: "seqExpr", stmts: prefix, result: acc, type: BOOL, loc };
   }
   return null;
 }

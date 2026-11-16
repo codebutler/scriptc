@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/union-typeof-effects.ts"
+ ],
+ "diags": []
+}
