@@ -1592,8 +1592,8 @@ export function lowerPromiseStaticCall(
 }
 
 /** The entries of a typed Promise.allSettled / Promise.any: ONE promise
- * type, as an expression of type Promise<T>[] or a uniform array literal
- * (the Promise.all bound — a heterogeneous literal is a tuple). */
+ * type, as a Promise<T>[] or Set<Promise<T>>, or a uniform array literal
+ * (a heterogeneous literal is a tuple). */
 function typedPromiseEntries(
   lowerer: Lowerer,
   argNode: ts.Expression,
@@ -1628,11 +1628,23 @@ function typedPromiseEntries(
   } else {
     entries = lowerer.lowerExpr(argNode);
   }
+  if (entries.type.kind === "set" && entries.type.elem.kind === "promise") {
+    // Combinators consume the iterable synchronously, before reaction jobs run.
+    // Keep the same promises in insertion order, as Array.from(set) does.
+    entries = {
+      kind: "setIntrinsic",
+      method: "toArray",
+      receiver: entries,
+      args: [],
+      type: arrayOf(entries.type.elem),
+      loc,
+    };
+  }
   if (entries.type.kind !== "array" || entries.type.elem.kind !== "promise") {
     lowerer.noLowering(
       `Promise.${member} over this argument shape`,
       argNode,
-      "an array of promises (Promise<T>[]) is the supported form",
+      "an array or Set of promises sharing one Promise<T> type is the supported form",
     );
   }
   return entries;
