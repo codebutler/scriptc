@@ -5633,6 +5633,7 @@ static ScrDyn *scr_dyn_typed_ref_new(
   d->v.typed_ref.record = false;
   d->v.typed_ref.klass = false;
   d->v.typed_ref.bag_class = false;
+  d->v.typed_ref.index_record = false;
   scr_typed_ref_slots[slot] = d; /* the empty slot that ended the probe */
   scr_typed_ref_count++;
   return d;
@@ -6090,6 +6091,7 @@ void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops) {
     d->v.typed_ref.record = false;
     d->v.typed_ref.klass = false;
     d->v.typed_ref.bag_class = false;
+    d->v.typed_ref.index_record = false;
   }
 }
 
@@ -6111,7 +6113,57 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops) {
     d->v.typed_ref.record = true;
     d->v.typed_ref.klass = false;
     d->v.typed_ref.bag_class = false;
+    d->v.typed_ref.index_record = false;
   }
+}
+
+/* ── live index-signature records: per-key access ────────────────────────
+ * A pure index-signature record's snapshot copies every key of its
+ * overflow map, so materializing it for each `rec[key]` makes a loop of
+ * reads quadratic in the record's size. A refresh of the capsule's cached
+ * view takes every key the record holds from the record (the cached view
+ * only keeps keys the record lacks, its prototype and its symbols), so a
+ * key the record holds answers the same from the record, view or not:
+ * reads and `in`/hasOwn of such a key convert only that value. A key the
+ * record lacks may be answered by the view or the prototype chain, and
+ * keeps the snapshot path. The capsule sets `record` too (see the
+ * `index_record` field); the declared-field paths skip it. */
+void scr_dyn_typed_ref_bind_index(ScrDyn *d, const ScrDynTypedIndexOps *ops) {
+  if (d && d->kind == SCR_DYN_TYPED_REF && !d->v.typed_ref.record) {
+    d->v.typed_ref.array = (const ScrDynTypedArrayOps *)(const void *)ops;
+    d->v.typed_ref.record = true;
+    d->v.typed_ref.klass = false;
+    d->v.typed_ref.bag_class = false;
+    d->v.typed_ref.index_record = true;
+  }
+}
+
+/* The key hooks of a live index-signature record capsule, or NULL. A
+ * partial record view's added properties join the record's copy
+ * (scr_record_view_extras_apply), so such a record keeps the snapshot. */
+static const ScrDynTypedIndexOps *scr_typed_ref_index_ops(const ScrDyn *d) {
+  if (d->kind != SCR_DYN_TYPED_REF || !d->v.typed_ref.index_record) return NULL;
+  if (scr_record_view_has_extras(d->v.typed_ref.ptr)) return NULL;
+  return (const ScrDynTypedIndexOps *)(const void *)d->v.typed_ref.array;
+}
+
+/* `__proto__` is an own key of the snapshot only when the record holds it,
+ * and its other answers depend on the prototype; leave it to the view. */
+static bool scr_typed_ref_index_key(const ScrStr *key) {
+  return !(key->len == 9 && memcmp(key->data, "__proto__", 9) == 0);
+}
+
+/* +1 value of a key the record holds, or NULL. */
+static ScrDyn *scr_typed_ref_index_get(const ScrDyn *d, const ScrStr *key) {
+  const ScrDynTypedIndexOps *ops = scr_typed_ref_index_ops(d);
+  if (!ops || !scr_typed_ref_index_key(key)) return NULL;
+  return ops->get(d->v.typed_ref.ptr, key);
+}
+
+/* Whether the record holds `key` (an own property of its view). */
+static bool scr_typed_ref_index_has(const ScrDyn *d, const ScrStr *key) {
+  const ScrDynTypedIndexOps *ops = scr_typed_ref_index_ops(d);
+  return ops && scr_typed_ref_index_key(key) && ops->has(d->v.typed_ref.ptr, key);
 }
 
 void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops) {
@@ -6120,6 +6172,7 @@ void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops) {
     d->v.typed_ref.record = false;
     d->v.typed_ref.klass = true;
     d->v.typed_ref.bag_class = false;
+    d->v.typed_ref.index_record = false;
   }
 }
 
@@ -6129,6 +6182,7 @@ void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *o
     d->v.typed_ref.record = false;
     d->v.typed_ref.klass = false;
     d->v.typed_ref.bag_class = true;
+    d->v.typed_ref.index_record = false;
   }
 }
 
@@ -6273,7 +6327,8 @@ ScrDyn *scr_dyn_typed_ref_own_member(const ScrDyn *d, const char *key, size_t ke
 }
 
 static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
-  if (!d->v.typed_ref.record || d->v.typed_ref.materialized) return NULL;
+  if (!d->v.typed_ref.record || d->v.typed_ref.index_record || d->v.typed_ref.materialized)
+    return NULL;
   /* A partial record view's writes added properties the record's shape does
    * not name, so the compiled field walk cannot answer for it: reflection
    * takes the record's copy, which holds them after its own fields. */
@@ -6286,7 +6341,7 @@ static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
  * or not it has a cached view. */
 static bool scr_typed_ref_linked_copy(const ScrDyn *d) {
   return scr_record_link_count && d->kind == SCR_DYN_TYPED_REF && d->v.typed_ref.record &&
-         scr_record_link_pair(d->v.typed_ref.ptr) != 0;
+         !d->v.typed_ref.index_record && scr_record_link_pair(d->v.typed_ref.ptr) != 0;
 }
 
 /* A live record capsule of a copy linked to its source: one without a cached
@@ -6731,6 +6786,7 @@ ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
 }
 
 ScrDyn *scr_dyn_typed_ref_own_get(const ScrDyn *d, const ScrStr *key) {
+  if (d->v.typed_ref.index_record) return scr_typed_ref_index_get(d, key);
   if (d->v.typed_ref.record) return scr_typed_ref_record_get(d, key);
   if (scr_event_ref_hooks) {
     ScrDyn *inherited = scr_event_ref_hooks->get(d, key);
@@ -9635,6 +9691,8 @@ ScrDyn *scr_dyn_typed_box(void *ptr, const ScrDynTypedRefRecipe *r) {
     scr_dyn_typed_ref_bind_class(d, (const ScrDynTypedClassOps *)r->ops);
   else if (r->view == 4)
     scr_dyn_typed_ref_bind_bag_class(d, (const ScrDynTypedBagClassOps *)r->ops);
+  else if (r->view == 5)
+    scr_dyn_typed_ref_bind_index(d, (const ScrDynTypedIndexOps *)r->ops);
   return d;
 }
 
@@ -15111,6 +15169,7 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
   }
   if (v->kind == SCR_DYN_TYPED_REF) {
     if (scr_typed_ref_array_has_own(v, key)) return true;
+    if (scr_typed_ref_index_has(v, key)) return true;
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
     if (record) {
       /* With no checked view, the snapshot holds exactly the present fields. */
@@ -15246,6 +15305,7 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   }
   if (v->kind == SCR_DYN_TYPED_REF && !scr_dyn_generator(v)) {
     if (scr_typed_ref_array_has_own(v, key)) return true;
+    if (scr_typed_ref_index_has(v, key)) return true;
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
     if (record) {
       /* With no checked view, the snapshot's prototype is Object.prototype. */
@@ -21945,6 +22005,7 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_TYPED_REF) {
     /* Own canonical indexes never consult the prototype: a hole is absent. */
     size_t index;
+    if (scr_typed_ref_index_has(v, key)) return true;
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
     if (record) {
       size_t field;

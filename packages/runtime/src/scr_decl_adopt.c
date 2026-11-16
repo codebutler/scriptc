@@ -188,7 +188,8 @@ static bool scr_decl_adopt_walk(ScrDeclAdoptList *list, ScrDyn *n, ScrDyn *capsu
     scr_decl_adopt_push(list, n, capsule);
   }
   void *ptr = capsule->v.typed_ref.ptr;
-  if (capsule->v.typed_ref.record && capsule->v.typed_ref.array && n->kind == SCR_DYN_OBJ) {
+  if (capsule->v.typed_ref.record && !capsule->v.typed_ref.index_record &&
+      capsule->v.typed_ref.array && n->kind == SCR_DYN_OBJ) {
     const ScrDynTypedRecordOps *ops = (const ScrDynTypedRecordOps *)(const void *)capsule->v.typed_ref.array;
     size_t paired = 0;
     for (size_t i = 0; i < ops->count; i++) {

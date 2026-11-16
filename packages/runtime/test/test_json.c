@@ -188,6 +188,47 @@ static ScrDyn *live_record_get(void *value, size_t index) {
   return index == 0 ? scr_dyn_new_num(rec->x) : scr_dyn_new_str(rec->label);
 }
 
+/* An index view reads a present key without constructing its snapshot,
+ * including after reflection has created the cached view. */
+static bool live_index_has(void *value, const ScrStr *key) {
+  (void)value;
+  return str_is(key, "x");
+}
+static ScrDyn *live_index_get(void *value, const ScrStr *key) {
+  return live_index_has(value, key) ? scr_dyn_new_num(((LiveRecord *)value)->x) : NULL;
+}
+static void live_index_ref_tests(void) {
+  const ScrDynTypedIndexOps ops = { live_index_get, live_index_has };
+  LiveRecord *rec = calloc(1, sizeof *rec);
+  rec->rc = 1;
+  rec->x = 7;
+  ScrDyn *capsule = scr_dyn_new_typed_ref(rec, live_record_retain, live_record_release,
+      "record:index", 12, live_record_materialize, NULL);
+  scr_dyn_typed_ref_bind_index(capsule, &ops);
+  ScrStr *x = S("x"), *missing = S("missing"), *proto = S("__proto__");
+  size_t before = live_record_materializations;
+  for (int round = 0; round < 2; round++) {
+    ScrDyn *got = scr_dyn_typed_ref_key_get(capsule, x);
+    check(got && got->kind == SCR_DYN_NUM && got->v.num == rec->x, "index view reads native value");
+    scr_dyn_release(got);
+    check(scr_dyn_has_key(capsule, x) && scr_dyn_in(capsule, x) && scr_dyn_has_own(capsule, x),
+        "index view answers present key without snapshot");
+    check(!scr_dyn_typed_ref_own_get(capsule, missing) &&
+          !scr_dyn_typed_ref_own_get(capsule, proto), "index absent and prototype keys keep fallback");
+    check(!scr_dyn_typed_ref_live_record(capsule), "index table is not a declared-field table");
+    check(live_record_materializations == before, "key operations never materialize index view");
+    ScrDyn *view = scr_dyn_typed_ref_materialize(capsule);
+    scr_dyn_release(view);
+    before++;
+    rec->x++;
+  }
+  scr_str_release(x);
+  scr_str_release(missing);
+  scr_str_release(proto);
+  scr_dyn_release(capsule);
+  live_record_release(rec);
+}
+
 static bool dyn_keys_are(const ScrDyn *keys, const char *const *want, size_t n) {
   if (!keys || keys->kind != SCR_DYN_ARR || keys->v.arr.len != n) return false;
   for (size_t i = 0; i < n; i++) {
@@ -1210,6 +1251,7 @@ int main(void) {
   typed_view_failure_tests();
   live_array_ref_tests();
   live_record_ref_tests();
+  live_index_ref_tests();
   record_reflects_static_tests();
   instance_prototype_release_tests();
 
