@@ -1,4 +1,5 @@
 /* Element reads and writes (`a[i]`, `a[i] = v`), compound element updates, and keyed record reads. */
+import { isStdlibArrayLikeType } from "../../type-mapper.js";
 import { OBJECT_PROTOTYPE_MEMBERS } from "../../shape-inference/domain.js";
 import { lowerUnionTupleRead } from "./union-fields.js";
 import { keptLayoutTypeOf, refuseCopiedStore } from "../structural-instances.js";
@@ -829,6 +830,17 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           type: DYN,
           loc: locOf(expr),
         };
+        // Like a native array read, an ArrayLike index can be absent even
+        // when the checker omits undefined from its index signature.
+        if (
+          isStdlibArrayLikeType(lowerer.typeOf(expr.expression), lowerer) &&
+          (rawKey.type.kind === "f64" ||
+            (rawKey.kind === "strLit" && String(Number(rawKey.value)) === rawKey.value))
+        ) {
+          const element = lowerer.mapTypeOf(lowerer.typeOf(expr));
+          if (element === null) lowerer.badType(expr, lowerer.typeOf(expr));
+          return lowerer.coerceToExpected(read, arrayValueType(lowerer, element));
+        }
         return obj.type.kind === "object"
           ? classKeyedReadResult(lowerer, expr, read)
           : lowerer.maybeNarrow(read, expr);

@@ -3617,6 +3617,20 @@ const CHILD_WRITER_MEMBERS: ReadonlySet<string> = new Set([
   "removeListener",
 ]);
 
+export function isStdlibArrayLikeType(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile">,
+): boolean {
+  const symbol = type.getSymbol();
+  return (
+    symbol !== undefined &&
+    ts.symbolName(symbol) === "ArrayLike" &&
+    symbol.declarations.some(
+      (decl) => ts.isInterfaceDeclaration(decl) && ctx.isStdlibFile(ts.getSourceFileOfNode(decl)),
+    )
+  );
+}
+
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
@@ -3840,6 +3854,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (flags & ts.TypeFlags.Number) return F64;
   if (flags & ts.TypeFlags.String) return STRING;
   if (flags & ts.TypeFlags.Boolean || flags & ts.TypeFlags.BooleanLiteral) return BOOL;
+  // ArrayLike describes property access, not array storage: strings,
+  // typed arrays, and getter-bearing objects all implement it. Keep the
+  // original value and read its members through the checked dynamic view.
+  if (isStdlibArrayLikeType(widened, ctx)) return DYN;
   // ErrorOptions carries a presence-sensitive unknown value. A fixed
   // optional field cannot distinguish {} from { cause: undefined }; the
   // checked-dynamic object retains that distinction through forwarding
