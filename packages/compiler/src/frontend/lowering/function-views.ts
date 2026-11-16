@@ -409,6 +409,15 @@ export class FunctionViews {
       everyStmtList(fn.body, {
         expr: (e) => {
           if (e.kind === "dynCheck") note(e.type);
+          // Variadic adapters also capture a boxed callable and receive the
+          // backend's CHECKED_ADAPTER mark. They need the same wider view
+          // even when no explicit dynCheck occurs in the program.
+          else if (
+            e.kind === "closure" &&
+            e.adapts === true &&
+            lowerer.liftedFnNamed(e.fnName)?.captures?.[0]?.type.kind === "dyn"
+          )
+            note(e.type);
           return true;
         },
         stmt: () => true,

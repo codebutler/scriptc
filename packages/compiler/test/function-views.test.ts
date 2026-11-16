@@ -218,3 +218,14 @@ console.log(wide({}));
   );
   expect(allViewTests(mod).map((test) => test.adapter)).toEqual([null]);
 });
+
+test("a wider slot recognizes a variadic constructor's checked view", async () => {
+  const mod = await compileToIr(`
+interface Measure { m(value: string | number): number }
+function keep(value: (text: string) => number): (text: string) => number { return value; }
+const held = keep(Number);
+const wide: Measure = { m: held };
+console.log(wide.m(7), wide.m("0x10"));
+`);
+  expect(allViewTests(mod).some((test) => test.adapter === null)).toBe(true);
+});
