@@ -1249,7 +1249,17 @@ export function lowerArrayFromCall(
       };
     }
     // A union of typed arrays and number arrays (indexed-unions.ts).
-    const indexedArms = indexedUnionArms(lowerer, src.type);
+    let indexedArms = indexedUnionArms(lowerer, src.type);
+    if (!indexedArms && args.length === 1) {
+      // Optional storage keeps its wider union after a flow check. Preserve
+      // the original read, but use the checked sub-union conversion before
+      // dispatching to the container arm; never reinterpret its union tags.
+      const site = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+      if (site && indexedUnionArms(lowerer, site)) {
+        src = lowerer.coerceInto(args[0]!, src, site);
+        indexedArms = indexedUnionArms(lowerer, src.type);
+      }
+    }
     if (indexedArms && args.length === 1)
       return lowerIndexedUnionToArray(lowerer, src, indexedArms, loc, true);
     if (src.type.kind === "set" && args.length === 1) {
