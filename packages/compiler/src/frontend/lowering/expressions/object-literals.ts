@@ -4729,7 +4729,8 @@ export function lowerShorthandValue(
     // absence instead of an unchecked extraction of the present arm.
     const stored = runtimeOptionalStorageOperand(lowerer, propName);
     if (stored) return stored;
-    const local = lowerer.resolveKey(symbol, propName);
+    // Use the identifier path's parameter-property normalization and capture rules.
+    const local = lowerer.resolveLocal(propName);
     // A catch binding reads like the long form `{ reason: reason }`.
     if (local?.type.kind === "caught") return lowerer.caughtRead(propName, local, loc);
     if (local) {
