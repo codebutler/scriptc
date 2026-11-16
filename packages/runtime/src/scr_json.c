@@ -5153,6 +5153,54 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
   scr_record_source_put(&probe);
 }
 
+/* A runtime-keyed native write has just inserted a previously absent
+ * field. `keys` is its own-name list captured after RHS validation and
+ * before the store. Keep descriptors and values of undeclared properties;
+ * declared values still live in native slots. Never invokes an accessor.
+ * A partial view's insertion already stored the value beside its underlying
+ * record: update that record's order, preserving its extra-property value. */
+void scr_record_source_append(void *rec, const ScrDyn *keys, const ScrStr *key,
+                              const char *const *names, const size_t *lens, size_t count) {
+  if (!rec || !keys || keys->kind != SCR_DYN_ARR) return;
+  ScrRecordSource *old = scr_record_source_slot(rec);
+  ScrRecordSource next = { .rec = rec, .names = (const char *)names,
+                           .lens = (const char *)lens, .name_stride = sizeof *names,
+                           .len_stride = sizeof *lens, .count = count };
+  while (old && old->capsule) {
+    next.rec = old->viewed;
+    next.names = old->names;
+    next.lens = old->lens;
+    next.name_stride = old->name_stride;
+    next.len_stride = old->len_stride;
+    next.count = old->count;
+    old = scr_record_source_slot(next.rec);
+  }
+  if (old) next = *old;
+  ScrDyn *view = scr_dyn_new_obj();
+  for (size_t i = 0; i <= keys->v.arr.len; i++) {
+    const ScrDyn *item = i < keys->v.arr.len ? keys->v.arr.items[i] : NULL;
+    const ScrStr *name = item && item->kind == SCR_DYN_STR ? item->v.str : key;
+    ScrDyn *descriptor = old && old->view ? scr_dyn_own_descriptor_or_null(old->view, name) : NULL;
+    if (descriptor) {
+      ScrDyn *name_value = scr_dyn_new_str((ScrStr *)name);
+      ScrDyn *defined = scr_dyn_define_property(view, name_value, descriptor);
+      scr_dyn_release(defined);
+      scr_dyn_release(name_value);
+      scr_dyn_release(descriptor);
+    } else {
+      scr_dyn_obj_set(view, name->data, name->len, scr_dyn_retain(scr_dyn_undefined()));
+    }
+  }
+  if (old) {
+    ScrDyn *previous = old->view;
+    old->view = view;
+    scr_dyn_release(previous);
+  } else {
+    next.view = view;
+    scr_record_source_put(&next);
+  }
+}
+
 void scr_record_source_spread(void *dst, const void *src, const char *const *names,
                               const size_t *lens, size_t count) {
   if (!scr_record_source_count || !dst || !src) return;

@@ -1399,6 +1399,37 @@ static void record_source_class_member(void) {
   scr_str_release(member);
 }
 
+/* Insertion keeps a checked record's extra properties and does not mutate
+ * the order metadata shared by a copy. Declared values stay in the record. */
+static void record_source_insertion(void) {
+  static const char *const names[] = {"a", "b"};
+  static const size_t lens[] = {1, 1};
+  size_t record[2] = {1, 0};
+  size_t copy[2] = {1, 0};
+  ScrDyn *source = scr_dyn_new_obj();
+  scr_dyn_obj_set(source, "extra", 5, scr_dyn_new_num(7));
+  scr_dyn_obj_set(source, "b", 1, scr_dyn_new_num(2));
+  scr_record_source_note(record, source, names, lens, 2);
+  scr_record_source_share(copy, record);
+  ScrDyn *keys = scr_dyn_get_own_property_names(source);
+  ScrStr *a = scr_str_new("a", 1);
+  scr_record_source_append(copy, keys, a, names, lens, 2);
+  assert(!scr_exc_pending());
+  const ScrDyn *before = scr_record_source_view(record);
+  const ScrDyn *after = scr_record_source_view(copy);
+  assert(scr_dyn_obj_count(before) == 2 && scr_dyn_obj_count(after) == 3);
+  size_t len;
+  const char *last = scr_dyn_obj_key_at(after, 2, &len);
+  assert(len == 1 && last[0] == 'a');
+  ScrDyn *extra = scr_dyn_obj_get(after, "extra", 5);
+  assert(extra && extra->kind == SCR_DYN_NUM && extra->v.num == 7);
+  scr_str_release(a);
+  scr_dyn_release(keys);
+  scr_dyn_release(source);
+  scr_weak_dispose(copy);
+  scr_weak_dispose(record);
+}
+
 /* scr_dyn_copy_prop_at stores a plain data property by an ordinary write
  * whichever mode the source object is in: on an array, an index key becomes
  * an element and a name goes to the array's own properties. */
@@ -1838,6 +1869,7 @@ int main(void) {
   json_schema_special_names();
   json_schema_union_members();
   record_source_class_member();
+  record_source_insertion();
   copy_prop_modes();
   record_source_get();
   record_source_hidden_key();

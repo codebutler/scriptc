@@ -4398,6 +4398,15 @@ function validateFunction(
       const want = sig.argTypes[i];
       if (want) expectType(a, want, `libCall ${e.fn} arg ${i}`);
     });
+    if (e.fn === "record.sourceAppend") {
+      const receiver = e.args[0];
+      const shape =
+        receiver?.type.kind === "record" ? records.get(receiver.type.shapeId) : undefined;
+      const key = e.args[2];
+      if (!shape) err("libCall record.sourceAppend receiver must be a known record", e.loc);
+      else if (key?.kind !== "strLit" || !shape.fields.some((field) => field.name === key.value))
+        err("libCall record.sourceAppend key must name a declared field", e.loc);
+    }
     if (checkLibValueCall(e)) return;
     if (checkLibNetworkCall(e)) return;
     if (checkLibFileCall(e)) return;

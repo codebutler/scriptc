@@ -55,6 +55,7 @@ const sized: Record<string, readonly string[]> = {
     "sourceProbes",
     "clones",
     "observed",
+    "runtimeWrites",
     "changed",
     "keptSourceShapes",
     "warnings",

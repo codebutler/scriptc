@@ -560,7 +560,9 @@ function scanModule(
         // key-order pass keeps (record.sourceNote).
         if (
           e.kind === "libCall" &&
-          (e.fn === "record.sourceSpread" || e.fn === "record.sourceNote")
+          (e.fn === "record.sourceSpread" ||
+            e.fn === "record.sourceNote" ||
+            e.fn === "record.sourceAppend")
         ) {
           const built = e.args[0]?.type;
           if (built?.kind === "record" && recordMayKeepSource(lowerer, built))

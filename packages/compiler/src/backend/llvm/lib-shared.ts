@@ -986,6 +986,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "record.sourceSpread": "scr_record_source_spread",
   "record.sourceShare": "scr_record_source_share",
   "record.sourceNote": "scr_record_source_note",
+  "record.sourceAppend": "scr_record_source_append",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).

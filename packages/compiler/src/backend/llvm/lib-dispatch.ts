@@ -516,6 +516,16 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${t} = icmp eq i32 ${found}, ${pair.value}`);
     return { name: t, type: e.type };
   }
+  if (e.fn === "record.sourceAppend") {
+    const record = host.emitReadReceiver(e.args[0]!);
+    const keys = emitBorrowedInput(host, e.args[1]!);
+    const key = emitBorrowedInput(host, e.args[2]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceAppend of a non-record");
+    host.dyn.emitRecordSourceAppend(B, record.name, keys.name, key.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
   if (e.fn === "record.sourceNote") {
     const built = host.emitReadReceiver(e.args[0]!);
     const keys = emitBorrowedInput(host, e.args[1]!);

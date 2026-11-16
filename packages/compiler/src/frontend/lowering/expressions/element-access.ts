@@ -32,6 +32,7 @@ import {
   isUnitType,
   recordTextCodecClass,
   shapeHasAccessorSlots,
+  keyedRecordFields,
   typeEquals,
   sortArms,
   typeKey,
@@ -3291,14 +3292,68 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         // table of same-signature closures). A key naming no declared
         // field throws the catchable TypeError — JS would ADD the
         // property, which a monomorphic struct cannot (the SEMANTICS.md
-        // keyed-write-miss divergence). Mixed-type and accessor-carrying
-        // shapes keep the fence.
+        // keyed-write-miss divergence). Heterogeneous data fields use
+        // per-field checked stores below; accessor shapes keep the fence.
         const common =
           shape.fields.length > 0 &&
           !shapeHasAccessorSlots(shape) &&
           shape.fields.every((f) => typeEquals(f.type, shape.fields[0]!.type))
             ? shape.fields[0]!.type
             : null;
+        if (
+          !common &&
+          !shapeHasAccessorSlots(shape) &&
+          !shape.fields.some((field) => field.name === "__proto__") &&
+          keyedRecordFields(shape).length > 0 &&
+          keyedRecordFields(shape).every((field) =>
+            canDynCheckTo(
+              field.type,
+              (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
+            ),
+          )
+        ) {
+          const loc = locOf(expr);
+          const body: IrStmt[] = [];
+          const save = (value: IrExpr, name: string): IrExpr => {
+            const temp = lowerer.declareHiddenLocal(name, value.type);
+            body.push({ kind: "varDecl", localId: temp.id, init: value, loc });
+            return varRef(temp.id, temp.type, loc);
+          };
+          const obj = save(lowerer.lowerExpr(target.expression), "%keyedReceiver");
+          const rawKey = lowerRecordPropertyKey(
+            lowerer,
+            lowerer.lowerExpr(target.argumentExpression),
+            target.argumentExpression,
+          );
+          if (rawKey.type.kind !== "string")
+            lowerer.unsupported(
+              "SC1090",
+              target,
+              "indexing records with non-string or non-number keys",
+            );
+          const key = save(rawKey, "%keyedKey");
+          const value = lowerer.coerceInto(expr.right, lowerer.lowerExpr(expr.right), DYN);
+          const fields = keyedRecordFields(shape);
+          body.push(
+            keyedFieldWrite(
+              lowerer,
+              {
+                container: "recordKeyed",
+                obj,
+                shapeId: receiverIr.shapeId,
+                field: fields[0]!.name,
+                keys: fields.map((field) => field.name),
+                key,
+                fieldType: DYN,
+                preserveKeyOrder: true,
+              },
+              value,
+              loc,
+            ),
+          );
+          return { kind: "block", body, loc };
+        }
         if (!common) {
           lowerer.unsupported(
             "SC1090",

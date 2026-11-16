@@ -191,6 +191,9 @@ export class KeyOrderNotes {
   /** Shapes a frontend order surface (keys, values/entries, inspect,
    * index-signature merges) walks. */
   readonly observed = new Set<string>();
+  /** Shapes with checked heterogeneous keyed writes. Every optional-field
+   * insertion on these shapes records its order at runtime. */
+  readonly runtimeWrites = new Set<string>();
   /** Shapes whose table this pass replaced. */
   readonly changed = new Set<string>();
   /** Declared spread merges this pass kept as a record's source
@@ -223,6 +226,7 @@ export class KeyOrderNotes {
       this.sourceProbes.size,
       this.clones.size,
       this.observed.size,
+      this.runtimeWrites.size,
       this.changed.size,
       this.keptSourceShapes.size,
       this.warnings.length,
@@ -470,6 +474,80 @@ function primitiveOnly(type: ts.Type): boolean {
 export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunction[]): void {
   const notes = lowerer.keyOrder;
   const shapes = lowerer.shapes;
+  // Runtime-key writes can produce arbitrarily many orders. Keep all
+  // insertions of these shapes in the existing source-order table rather
+  // than letting their writes constrain the constructor's static order.
+  const orderedWrites = new Set<IrStmt>();
+  let orderedWriteId = 0;
+  for (const fn of notes.runtimeWrites.size === 0 ? [] : fns) {
+    fn.body = transformStmtList(fn.body, {
+      expr: (e) => e,
+      stmt: (st) => {
+        if (
+          st.kind !== "recordSet" ||
+          orderedWrites.has(st) ||
+          st.value.kind === "fieldAbsent" ||
+          !notes.runtimeWrites.has(st.shapeId)
+        )
+          return st;
+        const loc = st.loc;
+        const body: IrStmt[] = [];
+        const save = (value: IrExpr, name: string): IrExpr => {
+          const id = `%orderedWrite.${orderedWriteId++}.${name}`;
+          fn.locals.push({ id, name, type: value.type, mutable: false });
+          body.push({ kind: "varDecl", localId: id, init: value, loc });
+          return varRef(id, value.type, loc);
+        };
+        const obj = save(st.obj, "receiver");
+        // The original RHS (including its field check) finishes first.
+        const value = save(st.value, "value");
+        const write: IrStmt = { ...st, obj, value };
+        orderedWrites.add(write);
+        const present = lowerer.recordFieldPresent(obj, st.shapeId, st.field, loc);
+        if (present.kind === "boolLit" && present.value)
+          return { kind: "block", body: [...body, write], loc };
+        const keysId = `%orderedWrite.${orderedWriteId++}.keys`;
+        fn.locals.push({ id: keysId, name: "keys", type: DYN, mutable: false });
+        const missingWrite: IrStmt = { ...write };
+        orderedWrites.add(missingWrite);
+        notes.keptSourceShapes.add(st.shapeId);
+        lowerer.recordSourcesPossible = true;
+        body.push({
+          kind: "if",
+          cond: present,
+          then: [write],
+          else_: [
+            {
+              kind: "varDecl",
+              localId: keysId,
+              init: {
+                kind: "libCall",
+                fn: "dyn.getOwnPropertyNames",
+                args: [{ kind: "dynFrom", value: obj, liveRef: true, type: DYN, loc }],
+                type: DYN,
+                loc,
+              },
+              loc,
+            },
+            missingWrite,
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "record.sourceAppend",
+                args: [obj, varRef(keysId, DYN, loc), strLit(st.field, loc)],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        });
+        return { kind: "block", body, loc };
+      },
+    });
+  }
   const facts = new Map<string, ShapeFacts>();
   const factsOf = (shapeId: string): ShapeFacts => {
     let f = facts.get(shapeId);
@@ -688,7 +766,10 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
           if (!literalLocs.has(segments)) literalLocs.set(segments, e.loc);
         } else if (copy !== undefined)
           f.copies.push({ source: copy, keys: presentKeys, loc: e.loc });
-        else f.pinned = true;
+        // An empty result allocated for runtime-key insertion contributes
+        // no constructor order; its keys are recorded as they are added.
+        else if (!(notes.runtimeWrites.has(e.type.shapeId) && presentKeys.size === 0))
+          f.pinned = true;
         return;
       }
       case "recordClone": {
@@ -807,6 +888,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   const visitStmt = (st: IrStmt): void => {
     switch (st.kind) {
       case "recordSet":
+        if (notes.runtimeWrites.has(st.shapeId) && st.value.kind !== "fieldAbsent") return;
         if (st.value.kind === "fieldAbsent") factsOf(st.shapeId).deleted.add(st.field);
         factsOf(st.shapeId).writes.push({
           field: st.field,
@@ -2164,6 +2246,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   const writeOf = (st: IrStmt): boolean => {
     if (
       st.kind === "recordSet" &&
+      !notes.runtimeWrites.has(st.shapeId) &&
       st.value.kind !== "fieldAbsent" &&
       moves.get(st.shapeId)?.has(st.field)
     )

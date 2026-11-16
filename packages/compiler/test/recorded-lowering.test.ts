@@ -18,6 +18,7 @@ const PROGRAMS = [
   "5047-generator-delegation-iterables-typed.ts",
   "5390-interface-loop-element-lifetimes.ts",
   "6496-key-order-built-and-parsed.ts",
+  "generic-keyed-record-copy.ts",
   "6916-index-record-spread-overrides.ts",
   "6951-unknown-cast-class-methods.ts",
   // Units without records rebuild a shared helper in place.

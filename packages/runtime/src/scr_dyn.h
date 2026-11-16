@@ -1678,6 +1678,8 @@ void scr_dyn_typed_ref_bind_index(ScrDyn *d, const ScrDynTypedIndexOps *ops);
  * `apply` consumes a fresh copying snapshot and returns it merged (+1). */
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count);
+void scr_record_source_append(void *rec, const ScrDyn *keys, const ScrStr *key,
+                              const char *const *names, const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
 /* Whether the record answers reflection from its declared fields alone: no
  * kept source, no link to a wider source (looked for when `may_link`), and

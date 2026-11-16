@@ -8857,11 +8857,9 @@ function mapGenericAwaitedAlias(type: ts.Type, ctx: TypeMapperCtx): IrType | nul
  * index picks its one declared field (the index signature's value type for
  * an undeclared name); an all-keys index — `keyof T` over the same
  * parameter, or an index parameter whose own binding widened to plain
- * string — covers every declared field. The mapping answers only when
- * every covered field agrees on ONE IR type (the call boundary resolved
- * the same access against the concrete T, so the shapes intern equal);
- * disagreeing fields would need a union whose arms this relation cannot
- * vouch for — those stay unmapped, keeping their fences. */
+ * string — covers every declared field. Equal field representations keep
+ * their type. `T[keyof T]` joins differing representations through the
+ * normal union container rules; unresolved key parameters keep their fence. */
 function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { resolveTypeParam, shapes } = ctx;
   if (!resolveTypeParam || !type.isIndexedAccessType()) return null;
@@ -8899,25 +8897,19 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
   // Only the `keyof T` index itself covers every field at once; a key
   // parameter bound to string keeps its literal-key resolution below.
   if (!(idx.isIndexType() && idx.getTarget() === obj)) return null;
-  // Fields of different scalar types (`Object.entries` over a bound record
-  // reads `T[keyof T]`): any one of them, the union of their types.
+  // T[keyof T] covers the actual stored fields, including nested records
+  // and containers. Preserve those representations in the joined union.
   const arms: IrType[] = [];
   for (const t of covered) {
     const parts = t.kind === "union" ? (ctx.unions.get(t.unionId)?.arms ?? null) : [t];
     if (!parts) return null;
     for (const part of parts) {
-      if (
-        part.kind !== "f64" &&
-        part.kind !== "string" &&
-        part.kind !== "bool" &&
-        part.kind !== "undefinedT" &&
-        part.kind !== "nullT"
-      )
-        return null;
+      if (!armHasUnionHome(part)) return null;
       if (!arms.some((a) => typeEquals(a, part))) arms.push(part);
     }
   }
   if (arms.length === 1) return arms[0]!;
+  if (!unionContainerArmsOk(arms)) return null;
   sortArms(arms);
   return { kind: "union", unionId: ctx.unions.intern(arms) };
 }

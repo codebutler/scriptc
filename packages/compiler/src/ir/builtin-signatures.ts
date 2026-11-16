@@ -6339,6 +6339,9 @@ function buildLibFnSignatures() {
      * placeholders), kept when they hold an undeclared key or another order.
      * The first is a record type, the second dyn (borrowed). Never throws. */
     "record.sourceNote": { argTypes: [null, DYN], result: VOID },
+    /** After a successful field insertion, preserve the prior own-name
+     * order and append the inserted name. All operands are borrowed. */
+    "record.sourceAppend": { argTypes: [null, DYN, STRING], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
     "insp.moreItems": { argTypes: [F64], result: STRING },
     "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },

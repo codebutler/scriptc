@@ -18,7 +18,7 @@ import { constituentTypes } from "../../ts7/checker.js";
 import type { FieldTarget } from "../lower-exprs.js";
 import type { Lowerer } from "../lowerer.js";
 
-export type KeyedFieldTarget = FieldTarget & { container: "recordKeyed" };
+export type KeyedFieldTarget = FieldTarget & { container: "recordKeyed"; preserveKeyOrder?: true };
 
 /** The property names a computed key's type allows: one or more string
  * literals (a literal union such as `"sent" | "received"`, enum string
@@ -294,15 +294,23 @@ export function keyedFieldWrite(
     prefix.push({ kind: "varDecl", localId: local.id, init: value, loc });
     stored = { kind: "varRef", localId: local.id, type: value.type, loc };
   }
+  if (target.preserveKeyOrder) lowerer.keyOrder.runtimeWrites.add(shapeId);
+  const write = (field: string): IrStmt[] => [
+    {
+      kind: "recordSet",
+      obj,
+      shapeId,
+      field,
+      value: lowerer.coerceToExpected(
+        stored,
+        lowerer.shapes.get(shapeId)!.fields.find((f) => f.name === field)!.type,
+      ),
+      loc,
+    },
+  ];
   const chain = target.keys.reduceRight<IrStmt[]>(
     (otherwise, field) => [
-      {
-        kind: "if",
-        cond: keyIs(key, field, loc),
-        then: [{ kind: "recordSet", obj, shapeId, field, value: stored, loc }],
-        else_: otherwise,
-        loc,
-      },
+      { kind: "if", cond: keyIs(key, field, loc), then: write(field), else_: otherwise, loc },
     ],
     [{ kind: "exprStmt", expr: keyMiss(key, target, loc), loc }],
   );

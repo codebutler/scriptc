@@ -3116,6 +3116,28 @@ export class LlDyn {
     );
   }
 
+  /** A successful optional-field insertion preserves the object's prior
+   * own-name order, including names carried by a checked record view. */
+  emitRecordSourceAppend(
+    B: BlockBuilder,
+    record: string,
+    keys: string,
+    key: string,
+    shapeId: string,
+  ): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId)!;
+    this.keepsRecordSources = true;
+    this.keptSourceShapes.add(shapeId);
+    const names = this.recordNameTable(shapeId, shape);
+    host.declare(
+      `declare void @scr_record_source_append(ptr, ptr, ptr, ptr, ptr, ${host.sizeType})`,
+    );
+    B.line(
+      `call void @scr_record_source_append(ptr ${record}, ptr ${keys}, ptr ${key}, ptr ${names.names}, ptr ${names.lens}, ${host.sizeType} ${shape.fields.length})`,
+    );
+  }
+
   /** The declared-name tables scr_record_source_note scans: parallel
    * constant arrays of field-name bytes and byte lengths in declaration
    * order (the order the record serializes), interned per shape. Internal
