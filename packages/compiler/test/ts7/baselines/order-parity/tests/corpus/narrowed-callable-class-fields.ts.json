@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/narrowed-callable-class-fields.ts"
+ ],
+ "diags": []
+}

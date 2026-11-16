@@ -12949,8 +12949,8 @@ function lowerObjLitGenericMethodCall(
   return { kind: "call", callee: instance.name, args, type: instance.returnType, loc };
 }
 
-/** A FUNC-, nullable-FUNC-, or DYN-typed class FIELD in call position:
- * `this.cb()` — the ctor-assigned callback field (countdown.js's shape).
+/** A callable class field, including a single callable union arm narrowed
+ * at the access: `this.cb()` — the ctor-assigned callback field.
  * The call is an ordinary call through the field's VALUE — read and, when
  * necessary, check-narrow the callable arm, then callValue; checked-dynamic
  * fields use the dynCall boundary. The receiver is the one the field's
@@ -12971,9 +12971,16 @@ function lowerFieldValueCall(
             const arms = lowerer.unions.get(fieldType.unionId)?.arms ?? [];
             const funcs = arms.filter((arm): boolean => arm.kind === "func");
             const func = funcs[0];
-            return funcs.length === 1 &&
-              func?.kind === "func" &&
-              arms.every((arm) => arm.kind === "func" || isUnitType(arm))
+            if (funcs.length !== 1 || func?.kind !== "func") return null;
+            if (arms.every((arm) => arm.kind === "func" || isUnitType(arm))) return func;
+            // A field can store data or a callback. Admit its callable arm
+            // only when the checker narrowed this access to that signature.
+            const site = lowerer.mapTypeOf(lowerer.typeOf(access));
+            return site?.kind === "func" &&
+              typeEquals(site, func) &&
+              !func.rest &&
+              call.arguments.nodes.length <= func.params.length &&
+              !call.arguments.nodes.some(ts.isSpreadElement)
               ? func
               : null;
           })()
@@ -12988,14 +12995,35 @@ function lowerFieldValueCall(
   const receiver: { receiver?: IrExpr } = {};
   if (!lowerer.receiverFreeCallbackFields.has(access.name.text))
     receiver.receiver = lowerer.coerceToExpected(target.obj, DYN);
+  const statements: IrStmt[] = [init];
   const finish = (result: IrExpr): IrExpr => ({
     kind: "seqExpr",
-    stmts: [init],
+    stmts: statements,
     result,
     type: result.type,
     loc,
   });
-  let callee = target ? lowerer.fieldGetExpr(target, locOf(access), access) : null;
+  let callee = lowerer.fieldGetExpr(target, locOf(access), access);
+  let stagedArgs: IrExpr[] | undefined;
+  if (
+    fieldType.kind === "union" &&
+    callableType !== null &&
+    lowerer.unions
+      .get(fieldType.unionId)
+      ?.arms.some((arm) => arm.kind !== "func" && !isUnitType(arm))
+  ) {
+    // Read the field before arguments, but check callability after them.
+    // A method called after a typeof guard may have changed the field;
+    // JavaScript still evaluates every argument before throwing TypeError.
+    const saved = lowerer.declareHiddenLocal("%callField", callee.type);
+    statements.push({ kind: "varDecl", localId: saved.id, init: callee, loc });
+    callee = varRef(saved.id, saved.type, loc);
+    stagedArgs = completeFuncValueArgs(lowerer, call, callableType, loc).map((argument) => {
+      const local = lowerer.declareHiddenLocal("%callArgument", argument.type);
+      statements.push({ kind: "varDecl", localId: local.id, init: argument, loc });
+      return varRef(local.id, local.type, loc);
+    });
+  }
   if (callee?.type.kind === "union" && callableType !== null) {
     // Calling a cleared callback field throws Node's call TypeError.
     const inPlace = checkedArmExtraction(
@@ -13057,7 +13085,7 @@ function lowerFieldValueCall(
         loc,
       });
     }
-    const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
+    const args = stagedArgs ?? completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
     return finish({ kind: "callValue", callee, ...receiver, args, type: callee.type.ret, loc });
   }
   if (callee?.type.kind === "dyn") {
