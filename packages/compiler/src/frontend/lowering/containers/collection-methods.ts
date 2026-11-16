@@ -138,6 +138,38 @@ export function lowerMapMethodCall(
   const name = access.name.text;
   if (!MAP_METHODS.has(name)) return null;
   let receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  // Maps with different value layouts still share their key operations.
+  // The checked runtime keeps each native Map by reference, including its
+  // value destructor and live iterator cursor; never cast one Map layout
+  // to another merely because these methods do not read a value.
+  if (
+    receiverIr?.kind === "union" &&
+    (name === "keys" || name === "has" || name === "delete" || name === "clear") &&
+    call.arguments.nodes.length === (name === "has" || name === "delete" ? 1 : 0) &&
+    !call.arguments.nodes.some((arg) => ts.isSpreadElement(arg)) &&
+    lowerer.isStdlibMember(access)
+  ) {
+    const arms = lowerer.unions.get(receiverIr.unionId)?.arms;
+    const first = arms?.[0];
+    if (
+      first?.kind === "map" &&
+      unionMapKeyKeepsIdentity(lowerer, first.key) &&
+      arms?.every((arm) => arm.kind === "map" && typeEquals(arm.key, first.key)) &&
+      lowerer.dynConvertible(receiverIr)
+    ) {
+      const receiver = lowerer.lowerExpr(access.expression);
+      const boxed = lowerer.coerceInto(access.expression, receiver, DYN);
+      return {
+        kind: "dynInvoke",
+        recv: boxed,
+        method: name,
+        calleeName: ts.getTextOfNode(access),
+        args: call.arguments.nodes.map((arg) => lowerer.lowerCollectionKey(arg, DYN)),
+        type: DYN,
+        loc: locOf(call),
+      };
+    }
+  }
   let probedUntyped = false;
   if (receiverIr?.kind !== "map" && isJsSourceFile(ts.getSourceFileOfNode(access))) {
     const probed = tryLowerExpression(lowerer, access.expression);
@@ -257,6 +289,23 @@ export function lowerMapMethodCall(
   }
   // forEach
   return lowerMapForEachCall(lowerer, call, receiver, receiverIr, probedUntyped);
+}
+
+/** Primitive keys and checked values already preserve identity; record and
+ * array keys use the live-reference conversions on both sides of the Map
+ * bridge. Other native references retain their existing refusal here:
+ * Error keys, for example, would be snapshots rather than the same key. */
+function unionMapKeyKeepsIdentity(lowerer: Lowerer, key: IrType): boolean {
+  if (key.kind === "union") {
+    const arms = lowerer.unions.get(key.unionId)?.arms;
+    return !!arms?.length && arms.every((arm) => unionMapKeyKeepsIdentity(lowerer, arm));
+  }
+  return (
+    isPrimitiveCollectionKey(key) ||
+    key.kind === "dyn" ||
+    key.kind === "record" ||
+    key.kind === "array"
+  );
 }
 
 /** Stored collection iterators retain the native collection by reference. The
