@@ -1179,7 +1179,7 @@ function lowerUnionBytesMethodCall(
   } else return null;
   const receiver = lowerer.lowerExpr(access.expression);
   const arms = indexedUnionArms(lowerer, receiver.type);
-  if (!arms || !allBytesArms(arms)) return null;
+  if (!arms || (!allBytesArms(arms) && name !== "join")) return null;
   return lowerIndexedUnionMethod(lowerer, receiver, arms, method, args(), result, loc);
 }
 
@@ -1192,7 +1192,7 @@ export function lowerBytesMethodCall(
   const name = access.name.text;
   const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   const unionArms = receiverIr ? indexedUnionArms(lowerer, receiverIr) : null;
-  if (unionArms && allBytesArms(unionArms) && lowerer.isStdlibMember(access))
+  if (unionArms && (allBytesArms(unionArms) || name === "join") && lowerer.isStdlibMember(access))
     return lowerUnionBytesMethodCall(lowerer, call, access, name);
   if (receiverIr?.kind !== "bytes") return null;
   if (!lowerer.isStdlibMember(access)) return null;

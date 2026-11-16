@@ -347,7 +347,8 @@ function unionKey(type: IrType): string {
   return type.kind === "union" ? String(type.unionId) : "?";
 }
 
-/** A typed-array method on a union whose every arm is a typed array: the
+/** A typed-array method on a union of typed arrays (also number arrays
+ * for join): the
  * arguments evaluate once in the caller, and each arm runs the same
  * `bytesIntrinsic` on its own receiver. `result` "receiver" is a method
  * that answers a typed array of the receiver's kind (subarray, slice,
@@ -375,6 +376,23 @@ export function lowerIndexedUnionMethod(
     params,
     resultT,
     (arm, info, refs) => {
+      // Join is common to typed arrays and ordinary number arrays. Keep the
+      // array arm's own intrinsic so holes remain empty fields, not NaN.
+      if (info.type.kind === "array") {
+        if (method !== "join" || result === "receiver" || result.kind !== "string")
+          throw new Error("non-join indexed-union method on a number array");
+        return returning(
+          {
+            kind: "arrIntrinsic",
+            method: "join",
+            receiver: arm,
+            args: [...refs],
+            type: result,
+            loc,
+          },
+          loc,
+        );
+      }
       const call: IrExpr = {
         kind: "bytesIntrinsic",
         method,
