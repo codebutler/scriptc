@@ -838,6 +838,7 @@ import {
 import {
   lowerStmts,
   hasJsTypeAnnotation,
+  jsObjectBindingHasOpenFieldWrites,
   noteBlockedBindings,
   isBlockedBinding,
   lowerScopedBlock,
@@ -9822,6 +9823,31 @@ export class Lowerer {
         ) {
           const setterParam = this.resolveValueSymbol(node.name);
           if (setterParam) this.jsWidenedBindings.add(setterParam);
+          return undefined;
+        }
+        // An unannotated JavaScript literal may change a property's value
+        // type after construction. Keep that object in checked storage when
+        // a direct store contradicts the checker's initializer-only shape.
+        if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isPropertyAccessExpression(node.left) &&
+          ts.isIdentifier(node.left.name) &&
+          ts.isIdentifier(node.left.expression)
+        ) {
+          const receiver = this.resolveValueSymbol(node.left.expression);
+          const declaration = receiver?.valueDeclaration;
+          if (
+            receiver &&
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            jsObjectBindingHasOpenFieldWrites(this, declaration)
+          ) {
+            this.runtimeOptionalBindingTypes.set(receiver, DYN);
+            this.jsWidenedBindings.add(receiver);
+            const global = this.globalsBySymbol.get(receiver);
+            if (global) global.type = DYN;
+          }
           return undefined;
         }
         if (

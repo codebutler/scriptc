@@ -9264,6 +9264,7 @@ function jsBindingWrites(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
   name: ts.Identifier,
+  properties = false,
 ): ts.BinaryExpression[] | null {
   const symbol = lowerer.resolveValueSymbol(name);
   if (!symbol) return null;
@@ -9276,20 +9277,76 @@ function jsBindingWrites(
       if (
         !ts.isBinaryExpression(node) ||
         node.operatorToken.kind < ts.SyntaxKind.FirstAssignment ||
-        node.operatorToken.kind > ts.SyntaxKind.LastAssignment ||
-        !ts.isIdentifier(node.left)
+        node.operatorToken.kind > ts.SyntaxKind.LastAssignment
       )
         return;
-      const entries = indexed.get(node.left.text);
+      const receiver = ts.isIdentifier(node.left)
+        ? node.left
+        : ts.isPropertyAccessExpression(node.left) && ts.isIdentifier(node.left.expression)
+          ? node.left.expression
+          : null;
+      if (!receiver) return;
+      const entries = indexed.get(receiver.text);
       if (entries) entries.push(node);
-      else indexed.set(node.left.text, [node]);
+      else indexed.set(receiver.text, [node]);
     });
     writes = indexed;
     lowerer.jsBindingWritesByOwner.set(owner, writes);
   }
-  return (writes.get(name.text) ?? []).filter(
-    (node) => lowerer.resolveValueSymbol(node.left as ts.Identifier) === symbol,
-  );
+  return (writes.get(name.text) ?? []).filter((node) => {
+    const receiver =
+      properties && ts.isPropertyAccessExpression(node.left)
+        ? node.left.expression
+        : !properties
+          ? node.left
+          : null;
+    return (
+      receiver !== null &&
+      ts.isIdentifier(receiver) &&
+      lowerer.resolveValueSymbol(receiver) === symbol
+    );
+  });
+}
+
+/** A direct field store whose value outruns a fresh JavaScript literal's
+ * inferred shape. An explicit declaration or field contract stays fixed. */
+export function jsObjectBindingHasOpenFieldWrites(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): boolean {
+  if (
+    !isJsSourceFile(ts.getSourceFileOfNode(decl)) ||
+    decl.type ||
+    hasJsTypeAnnotation(decl) ||
+    !ts.isIdentifier(decl.name) ||
+    !decl.initializer ||
+    !ts.isObjectLiteralExpression(decl.initializer)
+  )
+    return false;
+  return (jsBindingWrites(lowerer, decl, decl.name, true) ?? []).some((node) => {
+    if (
+      node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      !ts.isPropertyAccessExpression(node.left) ||
+      !ts.isIdentifier(node.left.name)
+    )
+      return false;
+    const property = lowerer.resolveValueSymbol(node.left.name)?.valueDeclaration;
+    if (
+      property &&
+      ts.sourceTextRangeMatches(
+        ts.getSourceFileOfNode(property),
+        property.pos,
+        ts.tokenStartOfNode(property),
+        /@type\b/,
+        ts.LEADING_SPAN,
+      )
+    )
+      return false;
+    return !lowerer.checker.isTypeAssignableTo(
+      lowerer.typeOf(node.right),
+      lowerer.typeOf(node.left),
+    );
+  });
 }
 
 /** Whether a JavaScript binding always holds a string: the checker types it

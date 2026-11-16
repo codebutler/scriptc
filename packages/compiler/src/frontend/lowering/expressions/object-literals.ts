@@ -1124,7 +1124,11 @@ export function lowerObjectLiteral(
     return lowerDynObjectLiteral(lowerer, expr);
   }
   const loc = locOf(expr);
-  // Module collection already chose checked storage for this JavaScript
+  const bindingSymbol =
+    ts.isVariableDeclaration(expr.parent) && ts.isIdentifier(expr.parent.name)
+      ? lowerer.resolveValueSymbol(expr.parent.name)
+      : null;
+  // Declaration analysis chose checked storage for this JavaScript
   // binding. Construct in that representation: an intermediate record would
   // check nested aliases back into inferred shapes and lose their identity.
   if (
@@ -1132,7 +1136,10 @@ export function lowerObjectLiteral(
     ts.isVariableDeclaration(expr.parent) &&
     expr.parent.initializer === expr &&
     ts.isIdentifier(expr.parent.name) &&
-    lowerer.globalOf(expr.parent.name)?.type.kind === "dyn"
+    (lowerer.globalOf(expr.parent.name)?.type.kind === "dyn" ||
+      (bindingSymbol !== null &&
+        bindingSymbol !== undefined &&
+        lowerer.jsWidenedBindings.has(bindingSymbol)))
   ) {
     return lowerDynObjectLiteral(lowerer, expr);
   }
