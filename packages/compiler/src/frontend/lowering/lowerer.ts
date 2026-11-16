@@ -628,6 +628,7 @@ import {
   lambdaSignature,
 } from "./call-signatures.js";
 import { dynamicOverloadChoice, guessedOverloadIdentifier } from "./overload-choice.js";
+import { openJsValue } from "./open-js-values.js";
 import {
   implicitAnyParamSymbolsOf,
   implicitLocalFnNodeOf,
@@ -4660,6 +4661,8 @@ export class Lowerer {
     undefined;
   /** overload-choice's answers per call, binding and function. */
   readonly dynamicOverloadAnswers = new Map<ts.Node, boolean>();
+  readonly openJsValues = new Set<ts.Node>();
+  readonly openJsValueQueries = new Set<ts.Node>();
   /** Error parameters of an error-first callback with a known value in
    * the copy being lowered: true while it holds an Error, false while it
    * holds null (staticCondition folds conditions on them). */
@@ -6360,6 +6363,8 @@ export class Lowerer {
     "timeValueDateDecisions",
     "timeValueDateWrites",
     "dynamicOverloadAnswers",
+    "openJsValues",
+    "openJsValueQueries",
     "argumentCountSlots",
     "coercions.widenedReturnTypes",
     // LIBRARY mode: the unit each root export name seeds is a pure function
@@ -16389,7 +16394,7 @@ export class Lowerer {
     if (
       ts.isIdentifier(node) &&
       isJsSourceFile(ts.getSourceFileOfNode(node)) &&
-      guessedOverloadIdentifier(this, node)
+      (guessedOverloadIdentifier(this, node) || openJsValue(this, node))
     )
       return this.checker.getAnyType();
     if (ts.isPropertyAccessExpression(node) && isJsSourceFile(ts.getSourceFileOfNode(node))) {

@@ -22,11 +22,8 @@ import {
 import { isJsSourceFile } from "../program.js";
 import { PoisonError, dynFallbackType } from "./lowerer.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
-import {
-  jsBindingAppendsOnly,
-  jsBindingHasOpenWrites,
-  jsObjectBindingHasOpenFieldWrites,
-} from "./lower-stmts.js";
+import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
+import { returnsOpenJsValue } from "./open-js-values.js";
 import type { FnCtx } from "./function-context.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { returnsGuessedOverloadValue } from "./overload-choice.js";
@@ -222,21 +219,12 @@ export function producesConstructor(lowerer: Lowerer, type: ts.Type): boolean {
 }
 
 /** Whether a return of `decl` itself (not of a nested function) is a bare
- * read of a JavaScript variable, or a direct property of a fresh object,
- * whose writes the checker does not constrain. A string that is only
- * appended to stays a string. */
+ * read of a JavaScript variable whose writes the checker does not
+ * constrain. A string that is only appended to stays a string. */
 function returnsOpenJsBinding(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
   let open = false;
   const opens = (value: ts.Expression | undefined): boolean => {
     while (value && ts.isParenthesizedExpression(value)) value = value.expression;
-    if (value && ts.isPropertyAccessExpression(value) && ts.isIdentifier(value.expression)) {
-      const binding = lowerer.resolveValueSymbol(value.expression)?.valueDeclaration;
-      return (
-        binding !== undefined &&
-        ts.isVariableDeclaration(binding) &&
-        jsObjectBindingHasOpenFieldWrites(lowerer, binding)
-      );
-    }
     if (!value || !ts.isIdentifier(value)) return false;
     const binding = lowerer.resolveValueSymbol(value)?.valueDeclaration;
     return (
@@ -437,7 +425,7 @@ export function declaredReturnType(
     mappedReturn !== null &&
     mappedReturn.kind !== "dyn" &&
     !(mappedReturn.kind === "promise" && mappedReturn.inner.kind === "dyn") &&
-    returnsOpenJsBinding(lowerer, decl)
+    (returnsOpenJsBinding(lowerer, decl) || returnsOpenJsValue(lowerer, decl))
   )
     return decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
       ? { kind: "promise", inner: DYN }

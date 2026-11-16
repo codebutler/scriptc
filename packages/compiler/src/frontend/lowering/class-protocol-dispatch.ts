@@ -20,6 +20,7 @@ import { type Lowerer } from "./lowerer.js";
 import { findMethodOn, upcastTo, type ClassInfo } from "./lower-classes.js";
 import { isClassCallback } from "./class-callbacks.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { openJsValue } from "./open-js-values.js";
 
 /** A method call through a class-backed protocol (`s.area()` with
  * `s: Shape`) that keeps its static signature. ClassDynamicDispatch adds
@@ -188,6 +189,9 @@ function protocolSignature(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): ProtocolSignature | null {
+  // An open JS receiver can hold a replacement method whose result differs
+  // from the initializer's inferred signature. Keep the runtime value.
+  if (openJsValue(lowerer, call)) return null;
   // A guarded optional step's receiver still carries its nullish arms.
   const recvTs = lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression));
   // A record view of a Map or Set has no stored member to read: the call

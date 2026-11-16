@@ -70,6 +70,7 @@ import {
 } from "../lower-exprs.js";
 import { isConstAssertionTypeNode, unitOnlyUnion } from "../../type-mapper.js";
 import { guessedOverloadValue } from "../overload-choice.js";
+import { openJsValue } from "../open-js-values.js";
 import { assertsGlobalObject, extractionCopiesReference } from "../assertion-identity.js";
 import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
@@ -864,7 +865,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         ts.isElementAccessExpression(node) ||
         ts.isIdentifier(node)) &&
       isJsSourceFile(ts.getSourceFileOfNode(node)) &&
-      guessedOverloadValue(lowerer, node)
+      (guessedOverloadValue(lowerer, node) || openJsValue(lowerer, node))
     )
       return expr;
     if (
