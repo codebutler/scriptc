@@ -271,6 +271,19 @@ function lowerBytesCallbackCall(
   return { kind: "call", callee: helper, args, type: resultT, loc };
 }
 
+/** Numeric union predicates retain the concrete typed array and its live
+ * elements; only the callback ABI is adapted by the union dispatcher. */
+export function bytesPredicateHelper(
+  lowerer: Lowerer,
+  method: "some" | "every",
+  bytesT: IrType & { kind: "bytes" },
+  fnRet: IrType,
+  arity: number,
+  loc: SrcLoc,
+): string {
+  return bytesCallbackHelper(lowerer, method, bytesT, BOOL, fnRet, arity, false, loc, "");
+}
+
 /** The interned helper of one typed-array callback method shape. A literal
  * callback gets a helper of its own (`site`), which the backend then calls
  * directly, as for the array methods. The visit is a loop on its own

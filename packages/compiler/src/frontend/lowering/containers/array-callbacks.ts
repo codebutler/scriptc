@@ -77,6 +77,7 @@ import {
   checkedValueNarrowing,
   supersetGuardFields,
 } from "./filter-predicates.js";
+import { bytesPredicateHelper } from "./bytes.js";
 import { omittableTrailingParam } from "../coercions/function-adapters.js";
 
 /** `a.map(fn)` / `a.filter(fn)` / `a.forEach(fn)` desugar to a direct
@@ -849,6 +850,12 @@ function arrayHofHelper(
  * filters its own array and converts its survivors through the checked
  * narrowing — a predicate that kept an element it does not describe throws
  * the TypeError. An arm with no such conversion leaves the fence in place. */
+type ArrayHofArm = IrType & { kind: "array" | "bytes" };
+
+function hofArmElement(arm: ArrayHofArm): IrType {
+  return arm.kind === "bytes" ? F64 : arm.elem;
+}
+
 export function lowerArrayUnionHofCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -867,9 +874,21 @@ export function lowerArrayUnionHofCall(
     return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const def = lowerer.unions.get(receiverT.unionId);
-  if (!def || def.arms.length < 2 || !def.arms.every((arm) => arm.kind === "array")) return null;
+  if (!def || def.arms.length < 2) return null;
+  const numericPredicate = method === "some" || method === "every";
+  const allArrays = def.arms.every((arm) => arm.kind === "array");
+  if (
+    !allArrays &&
+    !(
+      numericPredicate &&
+      def.arms.every(
+        (arm) => arm.kind === "bytes" || (arm.kind === "array" && arm.elem.kind === "f64"),
+      )
+    )
+  )
+    return null;
   if (call.arguments.nodes.length !== 1 || !call.arguments.nodes[0]) return null;
-  const arrays = def.arms as (IrType & { kind: "array" })[];
+  const arrays = def.arms as ArrayHofArm[];
   const valueArms: IrType[] = [];
   const addValueArm = (type: IrType): boolean => {
     if (type.kind === "dyn" || type.kind === "caught" || type.kind === "void") return false;
@@ -885,7 +904,7 @@ export function lowerArrayUnionHofCall(
     return true;
   };
   for (const array of arrays) {
-    if (!addValueArm(array.elem)) return null;
+    if (!addValueArm(hofArmElement(array))) return null;
   }
   const valueT: IrType =
     valueArms.length === 1
@@ -948,11 +967,17 @@ export function lowerArrayUnionHofCall(
     outElem = result.elem;
     const typeText = filterTypeText(lowerer, call);
     for (const array of arrays) {
-      if (typeEquals(array.elem, outElem)) {
+      if (typeEquals(hofArmElement(array), outElem)) {
         narrowing.push(null);
         continue;
       }
-      const helper = checkedFilterNarrowing(lowerer, array.elem, outElem, typeText, locOf(call));
+      const helper = checkedFilterNarrowing(
+        lowerer,
+        hofArmElement(array),
+        outElem,
+        typeText,
+        locOf(call),
+      );
       if (helper === null) return null;
       narrowing.push(helper);
     }
@@ -966,7 +991,10 @@ export function lowerArrayUnionHofCall(
       : arrayOf(outElem);
   for (const array of arrays) {
     const armFnT = funcOf(
-      [arrayValueType(lowerer, array.elem), F64, array].slice(0, arity),
+      [array.kind === "bytes" ? F64 : arrayValueType(lowerer, array.elem), F64, array].slice(
+        0,
+        arity,
+      ),
       fnRet,
     ) as IrType & { kind: "func" };
     if (!lowerer.cleanFuncAdaptable(fnArg.type, armFnT)) return null;
@@ -999,7 +1027,7 @@ function arrayUnionHofHelper(
   lowerer: Lowerer,
   method: "map" | "forEach" | "filter" | "some" | "every" | "findIndex",
   receiverT: IrType & { kind: "union" },
-  arrays: (IrType & { kind: "array" })[],
+  arrays: ArrayHofArm[],
   callbackT: IrType & { kind: "func" },
   arity: number,
   fnRet: IrType,
@@ -1028,7 +1056,7 @@ function arrayUnionHofHelper(
   lowerer.arrHofHelpers.set(key, name);
   const receiver = varRef("a.0", receiverT, loc);
   const callback = varRef("f.0", callbackT, loc);
-  const branch = (array: IrType & { kind: "array" }, index: number): IrStmt[] => {
+  const branch = (array: ArrayHofArm, index: number): IrStmt[] => {
     const tag = lowerer.armTag(receiverT.unionId, array);
     const concrete: IrExpr = {
       kind: "unionNarrow",
@@ -1039,32 +1067,43 @@ function arrayUnionHofHelper(
       loc,
     };
     const armFnT = funcOf(
-      [arrayValueType(lowerer, array.elem), F64, array].slice(0, arity),
+      [array.kind === "bytes" ? F64 : arrayValueType(lowerer, array.elem), F64, array].slice(
+        0,
+        arity,
+      ),
       fnRet,
     ) as IrType & { kind: "func" };
     const adapted = lowerer.coerceToExpected(callback, armFnT);
     if (!typeEquals(adapted.type, armFnT)) {
       throw new InternalCompilerError("lowerer bug: union-array callback stopped adapting");
     }
+    if (array.kind === "bytes" && method !== "some" && method !== "every") {
+      throw new InternalCompilerError("lowerer bug: non-predicate typed-array union helper");
+    }
+    const bytesCallee =
+      array.kind === "bytes" && (method === "some" || method === "every")
+        ? bytesPredicateHelper(lowerer, method, array, fnRet, arity, loc)
+        : null;
     const callee =
-      method === "some" || method === "every"
-        ? someEveryHelper(lowerer, method, array.elem, fnRet, arity, loc)
+      bytesCallee ??
+      (method === "some" || method === "every"
+        ? someEveryHelper(lowerer, method, hofArmElement(array), fnRet, arity, loc)
         : method === "findIndex"
-          ? findIndexHelper(lowerer, array.elem, fnRet, arity, false, loc)
+          ? findIndexHelper(lowerer, hofArmElement(array), fnRet, arity, false, loc)
           : arrayHofHelper(
               lowerer,
               method,
-              array.elem,
+              hofArmElement(array),
               fnRet,
               arity,
               loc,
-              method === "filter" ? array.elem : outElem,
-            );
+              method === "filter" ? hofArmElement(array) : outElem,
+            ));
     const invoke: IrExpr = {
       kind: "call",
       callee,
       args: [concrete, adapted],
-      type: method === "filter" ? arrayOf(array.elem) : resultT,
+      type: method === "filter" ? arrayOf(hofArmElement(array)) : resultT,
       loc,
     };
     // Survivors of this arm's own array, converted to the checker's result
