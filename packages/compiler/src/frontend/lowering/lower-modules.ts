@@ -3248,6 +3248,7 @@ export function collectGlobals(
               };
               lowerer.globalsBySymbol.set(symbol, g);
               lowerer.globalsList.push(g);
+              if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
             }
             continue;
           }
