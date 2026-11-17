@@ -1,6 +1,7 @@
 /* instanceof and in, including private-name and runtime-key in. */
 import { withoutParentheses } from "../../outer-expressions.js";
 import { reprototypedGuard, reprototypedReceiver } from "../reprototyped-reads.js";
+import { classPrototypeData } from "../class-prototypes.js";
 import { mayReplacePrototype } from "../class-method-mutations.js";
 import { consoleHasKey, isConsoleExpression } from "../coercions/console-records.js";
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
@@ -1433,6 +1434,12 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (left.type.kind === "union") {
     const unionId = left.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms;
+    const callablePrototypeTest =
+      !target.def.runtime &&
+      !target.builtinError &&
+      !target.builtinEmitter &&
+      !target.builtinStream &&
+      !target.localClass;
     // Records, arrays and scalar values are no instances of a class that
     // does not extend Array (lowerArrayClassInstanceOf tests the classes
     // that do), and neither is a promise: every compiled promise is the
@@ -1442,6 +1449,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       arms?.every(
         (arm) =>
           arm.kind === "object" ||
+          (arm.kind === "func" && callablePrototypeTest && lowerer.dynConvertible(arm)) ||
           arm.kind === "promise" ||
           arm.kind === "record" ||
           arm.kind === "array" ||
@@ -1458,6 +1466,13 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       // helper name behind that no function defines.
       for (const arm of arms)
         if (arm.kind === "object") operandClass(lowerer, arm.className, expr, "'instanceof'");
+      const hasCallable = arms.some((arm) => arm.kind === "func");
+      if (hasCallable && classPrototypeData(lowerer, target, loc) === null)
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "'instanceof' with callable union arms requires a representable class prototype",
+        );
       const key = `instanceof.union:${unionId}:${target.def.name}`;
       let helper = lowerer.valueHelpers.get(key);
       if (!helper) {
@@ -1466,6 +1481,30 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         const value: IrExpr = { kind: "varRef", localId: "value.0", type: left.type, loc };
         const body: IrStmt[] = [];
         arms.forEach((arm, tag) => {
+          if (arm.kind === "func") {
+            // A callable can acquire a program class prototype through
+            // setPrototypeOf. Test its current boxed identity, not its ABI.
+            const callable: IrExpr = { kind: "unionNarrow", unionId, tag, value, type: arm, loc };
+            body.push({
+              kind: "if",
+              cond: { kind: "unionIsTag", unionId, tag, negated: false, value, type: BOOL, loc },
+              then: [
+                {
+                  kind: "return",
+                  value: classInstanceOf(
+                    lowerer,
+                    lowerer.coerceToExpected(callable, DYN),
+                    target,
+                    loc,
+                  ),
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            });
+            return;
+          }
           if (arm.kind !== "object") return;
           const lhsInfo = operandClass(lowerer, arm.className, expr, "'instanceof'");
           const armTest = (info: ClassInfo): IrExpr =>
@@ -1516,6 +1555,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           body,
           loc,
         });
+      }
+      if (hasCallable && lowerer.classInitFlags.has(target.def.name)) {
+        const saved = lowerer.declareHiddenLocal("%instanceofOperand", left.type);
+        return readsClassAfter(
+          lowerer,
+          target,
+          expr.right,
+          [{ kind: "varDecl", localId: saved.id, init: left, loc }],
+          {
+            kind: "call",
+            callee: helper,
+            args: [varRef(saved.id, left.type, loc)],
+            type: BOOL,
+            loc,
+          },
+        );
       }
       return { kind: "call", callee: helper, args: [left], type: BOOL, loc };
     }

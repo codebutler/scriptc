@@ -34,8 +34,21 @@ ScrDyn *scr_dyn_class_test_prototype(ScrDyn *object) {
   switch (object->kind) {
   case SCR_DYN_OBJ:
   case SCR_DYN_ARR:
-  case SCR_DYN_FUNC:
     break;
+  case SCR_DYN_FUNC: {
+    /* Follow the shared Function.prototype as well as an explicit
+     * replacement: a program can replace either link. Function.prototype
+     * itself defaults to Object.prototype, not back to itself. */
+    ScrDyn *prototype = scr_dyn_function_prototype_override(object);
+    if (scr_exc_pending()) { scr_dyn_release(prototype); return NULL; }
+    if (prototype) return prototype;
+    prototype = scr_dyn_function_prototype();
+    if (object == prototype || scr_closure_identity_equal(object->v.fn.clo, prototype->v.fn.clo)) {
+      scr_dyn_release(prototype);
+      return scr_dyn_object_prototype();
+    }
+    return prototype;
+  }
   case SCR_DYN_PROXY: {
     ScrDyn *trap = scr_dyn_obj_read(object->v.proxy.handler, "getPrototypeOf", 14);
     bool none = !trap || trap->kind == SCR_DYN_UNDEF || trap->kind == SCR_DYN_NULL;
