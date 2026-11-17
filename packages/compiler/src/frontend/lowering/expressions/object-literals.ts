@@ -3565,7 +3565,9 @@ function lowerUnionSpreadMergeDyn(
     )
   )
     return null;
-  return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr), target);
+  // Conditional contributors need only supply their own keys; validate the
+  // complete object after every spread has copied its selected source.
+  return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr, undefined, true), target);
 }
 
 /** A union of plain records can preserve its existing variant while
