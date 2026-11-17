@@ -6,6 +6,7 @@ import { builtinModuleFnOf } from "../surfaces.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { lowerInGlobalObject } from "../expressions/relational.js";
 import { noteUntypedIntegrity } from "../frozen-records.js";
+import { lowerReflectRecordDelete } from "./record-delete.js";
 import {
   BOOL,
   DYN,
@@ -856,6 +857,9 @@ export function lowerReflectCall(
   ) {
     const loc = locOf(call);
     let target = lowerer.lowerExpr(call.arguments.nodes[0]!);
+    if (target.type.kind === "record") {
+      return lowerReflectRecordDelete(lowerer, call, target);
+    }
     const info =
       target.type.kind === "classval" ? lowerer.classes.get(target.type.className) : undefined;
     // A primitive target throws the TypeError, so it boxes as is.

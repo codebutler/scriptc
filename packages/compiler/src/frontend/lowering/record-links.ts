@@ -32,7 +32,7 @@ import {
   typeEquals,
   typeKey,
 } from "../../ir/ir.js";
-import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
+import { everyStmtList, everyTypeChild, transformStmtList } from "../../ir/traverse.js";
 import { keyedHelperName } from "./stable-names.js";
 import type { Lowerer } from "./lowerer.js";
 import { recordHasOwnHelper, recordKeysArrayCall } from "./lower-calls.js";
@@ -272,7 +272,7 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
     )
       answering.add(helper.fn.name);
   }
-  for (const finalize of lowerer.linkedHelperFinalizers) finalize(sourced);
+  for (const finalize of lowerer.linkedHelperFinalizers) finalize(sourced, scan.checked);
   // The module's functions already hold the helpers lifted before.
   functions.push(...lowerer.liftedFns.slice(lifted));
   restoreStringConversions(lowerer, functions, answering);
@@ -542,8 +542,30 @@ export const EXPOSING_LIB_CALLS = /^(json|insp|dyn|js)\.|^(child|process)\.send$
 function scanModule(
   lowerer: Lowerer,
   functions: readonly IrFunction[],
-): { sourced: Set<string>; exposed: IrType[] } {
+): { sourced: Set<string>; checked: Set<string>; exposed: IrType[] } {
   const sourced = new Set<string>();
+  const checked = new Set<string>();
+  const checkedSeen = new Set<string>();
+  // A checked callable or container can construct records below its outer
+  // type too. Mutating helpers need this origin fact separately from kept
+  // source/order metadata, which ordinary native writes also create.
+  const check = (type: IrType): void => {
+    const key = typeKey(type);
+    if (checkedSeen.has(key)) return;
+    checkedSeen.add(key);
+    if (type.kind === "record") {
+      checked.add(type.shapeId);
+      const shape = lowerer.shapes.get(type.shapeId);
+      for (const field of shape?.fields ?? []) check(field.type);
+      if (shape?.indexValue) check(shape.indexValue);
+    } else if (type.kind === "union") {
+      for (const arm of lowerer.unions.get(type.unionId)?.arms ?? []) check(arm);
+    } else
+      everyTypeChild(type, (child) => {
+        check(child);
+        return true;
+      });
+  };
   const seen = new Set<string>();
   const exposed = new Map<string, IrType>();
   const expose = (t: IrType): void => {
@@ -554,7 +576,10 @@ function scanModule(
     everyStmtList(fn.body, {
       stmt: () => true,
       expr: (e) => {
-        if (e.kind === "dynCheck") keptSourceTypes(lowerer, e.type, sourced, seen);
+        if (e.kind === "dynCheck") {
+          keptSourceTypes(lowerer, e.type, sourced, seen);
+          check(e.type);
+        }
         // A literal that starts with a spread of a record that kept a
         // source keeps one too, as does a width spread or clone the
         // key-order pass keeps (record.sourceNote).
@@ -577,7 +602,7 @@ function scanModule(
       },
     });
   }
-  return { sourced, exposed: [...exposed.values()] };
+  return { sourced, checked, exposed: [...exposed.values()] };
 }
 
 /** Adds to `out` the record types a checked conversion into `t` can build

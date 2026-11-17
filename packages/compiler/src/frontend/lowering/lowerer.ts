@@ -5310,8 +5310,11 @@ export class Lowerer {
   readonly recordSourceDeletes: { shapeId: string; key: string; loc: SrcLoc }[] = [];
   /** Completions of "custom" linked helpers (record-links.ts), which
    * finalizeRecordLinks runs once the links are known, with the record
-   * shapes a checked conversion can leave holding a kept source. */
-  readonly linkedHelperFinalizers: ((sourced: ReadonlySet<string>) => void)[] = [];
+   * shapes that can hold a kept source and those reachable through checked conversions. */
+  readonly linkedHelperFinalizers: ((
+    sourced: ReadonlySet<string>,
+    checked: ReadonlySet<string>,
+  ) => void)[] = [];
   /** Helpers over record types that finalizeRecordLinks completes. */
   readonly linkedHelpers: LinkedHelper[] = [];
   /** The JavaScript names of methods (an object literal's, a class's, the
