@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/mixed-tuple-array-map.ts"
+ ],
+ "diags": []
+}

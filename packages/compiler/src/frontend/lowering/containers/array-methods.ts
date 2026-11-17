@@ -1,3 +1,5 @@
+import { isThisParameter } from "../call-signatures.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import { keyedHelperName } from "../stable-names.js";
 import { liftedFreshSpread } from "../coercions/fresh-spread.js";
 import { lowerArrayIteratorValue } from "../iterator-adapters.js";
@@ -643,6 +645,8 @@ export function lowerArrayMethodCall(
     }
   }
   if (receiverIr?.kind === "union") {
+    const mixedMap = lowerMixedTupleArrayMap(lowerer, call, access, receiverIr);
+    if (mixedMap) return mixedMap;
     const unionHof = lowerArrayUnionHofCall(lowerer, call, access, receiverIr);
     if (unionHof) return unionHof;
     // A union of tuples whose elements all have one type (the values of an
@@ -2523,6 +2527,94 @@ function arraySearchHelper(
   return name;
 }
 
+/** Map a mixed tuple/array union in place. The joined element type only
+ * proves that the existing arm view is representable; no array conversion
+ * is applied. Tuple callback and mutable-copy identity fences still apply. */
+function lowerMixedTupleArrayMap(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  receiver: IrType & { kind: "union" },
+): IrExpr | null {
+  if (access.name.text !== "map" || !lowerer.isStdlibMember(access)) return null;
+  const arms = lowerer.unions.get(receiver.unionId)?.arms;
+  if (!arms?.some((arm) => arm.kind === "array")) return null;
+  let tuple = false;
+  const elements: IrType[] = [];
+  const add = (type: IrType): boolean => {
+    const parts = type.kind === "union" ? lowerer.unions.get(type.unionId)?.arms : [type];
+    if (
+      !parts ||
+      parts.some((part) => part.kind === "dyn" || part.kind === "caught" || part.kind === "void")
+    )
+      return false;
+    for (const part of parts)
+      if (!elements.some((elem) => typeEquals(elem, part))) elements.push(part);
+    return true;
+  };
+  for (const arm of arms) {
+    if (arm.kind === "array") {
+      if (!add(arm.elem)) return null;
+    } else {
+      const shape = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
+      if (
+        !shape?.tuple ||
+        shape.indexValue !== undefined ||
+        shape.fields.length === 0 ||
+        shape.fields.some((field) => field.optional)
+      )
+        return null;
+      tuple = true;
+      for (const field of shape.fields) if (!add(field.type)) return null;
+    }
+  }
+  if (!tuple || elements.length === 0) return null;
+  if (call.arguments.nodes.length !== 1 || call.arguments.nodes.some(ts.isSpreadElement))
+    lowerer.noLowering(
+      "mixed tuple/array .map arguments",
+      call,
+      "the supported form takes one callback and no thisArg",
+    );
+  const elem: IrType =
+    elements.length === 1
+      ? elements[0]!
+      : { kind: "union", unionId: lowerer.unions.intern(elements) };
+  const read: IrType & { kind: "array" } = { kind: "array", elem };
+  if (lowerer.widthLiftPlan(receiver, read)?.how !== "unionArr") return null;
+  const receiverValue = lowerer.lowerExpr(access.expression);
+  const callback = call.arguments.nodes[0]!;
+  const literal = withoutParentheses(callback);
+  const contextual =
+    (ts.isArrowFunction(literal) || ts.isFunctionExpression(literal)) &&
+    literal.parameters.nodes.find((parameter) => !isThisParameter(parameter))?.type === undefined;
+  let callbackValue: IrExpr | null = null;
+  if (!contextual) {
+    callbackValue = lowerer.lowerExpr(callback);
+    const type = callbackValue.type;
+    if (
+      type.kind !== "func" ||
+      (type.params[0] !== undefined && !identityPreservingWidening(lowerer, elem, type.params[0]))
+    )
+      lowerer.noLowering(
+        "mixed tuple/array .map callback element conversion",
+        callback,
+        "a callback value must accept every element without a structural copy or checked narrowing",
+      );
+  }
+  const view = unionArmsView(
+    lowerer,
+    access.expression,
+    receiverValue,
+    read,
+    locOf(access.expression),
+  );
+  if (!view) return null;
+  const dispatch = (): IrExpr => lowerUnionArmsMethodCall(lowerer, call, access, view, read, true);
+  return callbackValue
+    ? lowerer.withExpressionOverride(literal, callbackValue, dispatch)
+    : dispatch();
+}
+
 /** A method called on a union of tuples and arrays read as one array
  * (unionArmsView): each arm runs its own lowering on the value itself, an
  * array arm the array's method and a tuple arm the tuple's
@@ -2540,14 +2632,18 @@ function lowerUnionArmsMethodCall(
   access: ts.PropertyAccessExpression,
   view: IrExpr,
   read: IrType & { kind: "array" },
+  preparedMap = false,
 ): IrExpr {
   const loc = locOf(call);
   const method = access.name.text;
   const onArm = (arm: IrExpr): IrExpr => {
+    const armType = arm.type;
     const lowered =
-      arm.type.kind === "array"
+      armType.kind === "array"
         ? lowerer.withExpressionOverride(access.expression, arm, () =>
-            lowerArrayMethodCall(lowerer, call, access),
+            preparedMap
+              ? lowerArrayHofCall(lowerer, call, access, "map", armType.elem)
+              : lowerArrayMethodCall(lowerer, call, access),
           )
         : lowerTupleReadMethodCall(lowerer, call, access, arm);
     if (lowered) return lowered;
@@ -2604,6 +2700,8 @@ function lowerUnionArmsMethodCall(
   // One type for every arm's answer: the checker's result where the arms
   // disagree (a tuple's `.find()` and an array's spell the same union).
   let type = answers[0]!.type;
+  if (preparedMap && !answers.every((answer) => typeEquals(answer.type, type)))
+    lowerer.noLowering("mixed tuple/array .map result representations", call);
   if (!answers.every((answer) => typeEquals(answer.type, type))) {
     const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (!declared || declared.kind === "void")
