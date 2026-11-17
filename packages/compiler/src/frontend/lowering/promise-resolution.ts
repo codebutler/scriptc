@@ -100,12 +100,12 @@ export function lowerVoidResolveCall(
     !bindingNeverReassigned(lowerer.bindingScope(), symbol, parameter)
   )
     return null;
-  const value = lowerer.lowerExpr(argument);
+  const effect = lowerer.lowerExprStatement(argument);
   // The callee is an immutable parameter read, so delaying that read past
   // the operand has no observable effect. Keep the existing native ABI.
   return {
     kind: "seqExpr",
-    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    stmts: [effect],
     result: { kind: "callValue", callee, args: [], type: VOID, loc },
     type: VOID,
     loc,
