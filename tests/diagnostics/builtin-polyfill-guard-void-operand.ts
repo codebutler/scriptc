@@ -1,8 +1,8 @@
-// A feature test of a built-in member that compares it with `void e` has one
-// answer whatever `e` is, and `e` still runs. The guard is not decided
-// without evaluating the test, so the operand is not dropped: the test lowers
-// as any other, where `void` with an operand that has effects is refused in
-// value position.
+// An effectful void operand must run even in a built-in feature test.
+// These guards cannot be folded without evaluating the operand. Explicit
+// void sequencing is supported; the unresolved prototype member still
+// reaches the static-only unknown-operator fence. The operand must not
+// disappear merely because the built-in is present.
 let calls = 0;
 function note(label: string): number {
   calls++;

@@ -696,22 +696,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   }
   if (ts.isAsExpression(expr) || ts.isTypeAssertion(expr)) return lowerer.lowerAsExpression(expr);
   if (ts.isVoidExpression(expr)) {
-    // `void e` in VALUE position is the undefined value after evaluating
-    // e. A side-effect-free operand drops entirely (`void 0` — the
-    // classic undefined spelling; the surrounding slot's coercion wraps
-    // the unit like any bare `undefined`). Effectful operands compile
-    // where the value is DISCARDED — statement position
-    // (lowerExprStatement) and void-returning arrow bodies — but here
-    // the value is consumed and the effect would need to sequence before
-    // it, which no expression shape carries: fence by name.
-    if (sideEffectFreeOptionValue(expr.expression)) {
-      return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) };
-    }
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "'void' with an effectful operand in value position (hoist the operand to its own statement — statement-position 'void e' and void-returning arrow bodies compile)",
-    );
+    // The operand runs for effect; the explicit operator always yields
+    // undefined. Reuse statement lowering for assignment, short circuit,
+    // exception propagation, and owned-result disposal.
+    const result: IrExpr = {
+      kind: "unitLit",
+      unit: "undefined",
+      type: UNDEFINED_T,
+      loc: locOf(expr),
+    };
+    if (sideEffectFreeOptionValue(expr.expression)) return result;
+    return {
+      kind: "seqExpr",
+      stmts: [lowerer.lowerExprStatement(expr.expression)],
+      result,
+      type: UNDEFINED_T,
+      loc: locOf(expr),
+    };
   }
   if (ts.isTypeOfExpression(expr)) return lowerTypeofExpr(lowerer, expr, loc);
   if (ts.isIdentifier(expr)) {

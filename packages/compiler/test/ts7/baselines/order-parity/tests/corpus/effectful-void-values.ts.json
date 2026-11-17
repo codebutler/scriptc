@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/effectful-void-values.ts"
+ ],
+ "diags": []
+}

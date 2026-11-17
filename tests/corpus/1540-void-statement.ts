@@ -1,6 +1,6 @@
 // Statement-position `void e` — the fire-and-forget idiom (`void poll();`,
 // `void main();`): the operand evaluates for effect, the undefined result is
-// discarded. Value-position `void` stays fenced.
+// discarded.
 let n = 0;
 function bump(): number {
   n += 1;

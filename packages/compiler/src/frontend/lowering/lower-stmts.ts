@@ -11242,8 +11242,8 @@ export function lowerExprStatement(
   // poll();`, `void main();` — lint-visible "I meant to drop this
   // promise"): the operand evaluates for effect and the undefined result
   // is unobservable here, so it lowers as the operand statement itself.
-  // Value-position `void` keeps the syntax fence (a standalone undefined
-  // VALUE needs a union slot to live in).
+  // Value-position `void` sequences this same statement before its
+  // undefined result in lowerExpr.
   if (ts.isVoidExpression(expr)) return lowerExprStatement(lowerer, expr.expression);
   if (ts.isBinaryExpression(expr)) {
     const opKind = expr.operatorToken.kind;
