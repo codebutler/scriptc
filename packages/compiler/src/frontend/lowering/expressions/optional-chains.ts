@@ -5,7 +5,7 @@ import { shadowedHandleMember } from "../handle-properties.js";
 import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
 import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
-import { overloadValueResult } from "../lower-calls.js";
+import { lowerCallThroughValue, overloadValueResult } from "../lower-calls.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { DYN, STRING, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../../ir/ir.js";
@@ -562,6 +562,23 @@ export function lowerOptionalChain(
   // `f?.()`: the callee IS the guarded value — build the indirect call
   // directly (no member dispatch exists to re-enter).
   if (dotNode === expr && ts.isCallExpression(expr)) {
+    const first = rest[0];
+    if (
+      narrowed.kind === "union" &&
+      first?.kind === "func" &&
+      rest.every(
+        (arm) => arm.kind === "func" && typeEquals({ ...arm, ret: VOID }, { ...first, ret: VOID }),
+      ) &&
+      lowerer.dynConvertible(narrowed) &&
+      !expr.arguments.nodes.some(ts.isSpreadElement)
+    ) {
+      // Keep the ordinary checked union-call result policy. In particular,
+      // a void view does not prove that the original callable returns undefined.
+      const call = lowerCallThroughValue(lowerer, expr, recvRef, loc);
+      const supplied = optionalCallReceivers.get(expr);
+      const body = supplied && call.kind === "dynCall" ? { ...call, receiver: supplied } : call;
+      return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
+    }
     if (narrowed.kind !== "func") lowerer.badType(recvNode, lowerer.typeOf(recvNode));
     // The same completed function-value ABI an unguarded call uses: an
     // omitted optional argument still reaches the callee as undefined
