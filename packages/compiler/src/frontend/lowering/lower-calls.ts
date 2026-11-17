@@ -7179,7 +7179,19 @@ function reconcileOverloadReturn(
     ts.isMethodDeclaration(rdecl) &&
     (!isJsSourceFile(ts.getSourceFileOfNode(rdecl)) || returnsOnlyThis(rdecl))
   ) {
-    call = lowerer.maybeNarrow(call, expr);
+    const narrowed = lowerer.maybeNarrow(call, expr);
+    // A method's declared return does not prove the instance returned by a
+    // replaced implementation. Preserve narrowing's heritage fences, then
+    // check its direct subclass projection with a catchable TypeError.
+    if (
+      narrowed.kind === "downcast" &&
+      narrowed.value === call &&
+      narrowed.type.kind === "object"
+    ) {
+      call = checkedClassAssertion(lowerer, call, narrowed.type, call.loc) ?? narrowed;
+    } else {
+      call = narrowed;
+    }
   }
   // An override narrowed to part of its base's union return shares the
   // union ABI; a call resolved to that override narrows the result back.
@@ -13507,7 +13519,7 @@ function lowerObjectMethodCallOn(
             originalId: (): string | undefined => found.declarer.prototypeOriginals?.get(method),
             directCall: (): IrExpr => fallback,
           };
-    const result = classCallbackCall(
+    const callback = classCallbackCall(
       lowerer,
       value,
       method,
@@ -13525,6 +13537,7 @@ function lowerObjectMethodCallOn(
         ? undefined
         : info,
     );
+    const result = reconcileOverloadReturn(lowerer, call, callback);
     return {
       kind: "seqExpr",
       stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
@@ -13578,13 +13591,13 @@ function lowerObjectMethodCallOn(
     lowerer.noteEdge(`%${target.declarer.def.name}.${method}`);
     const receiver = lowerReceiver();
     const args = lowerer.completeArgs(call.arguments.nodes, adapted.params, locOf(call), call);
-    return {
+    return reconcileOverloadReturn(lowerer, call, {
       kind: "call",
       callee: `%${target.declarer.def.name}.${method}$own`,
       args: [lowerer.upcastTo(receiver, target.declarer.def.name), ...args],
       type: adapted.ret,
       loc: locOf(call),
-    };
+    });
   }
   if (lowerer.overrideBelow(info, method)) lowerer.noteVirtualEdge(info, method);
   else lowerer.noteEdge(`%${target.declarer.def.name}.${method}`);
