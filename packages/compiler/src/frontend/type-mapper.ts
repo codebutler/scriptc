@@ -3791,6 +3791,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       contextResolutions++;
       return viaNarrowedParam;
     }
+    const viaRecordRefinement = mapBoundRecordRefinement(type, ctx);
+    if (viaRecordRefinement !== undefined) {
+      contextResolutions++;
+      return viaRecordRefinement;
+    }
     // `Awaited<T>` over a bound type parameter (an async generic body's
     // `await fn()` result): a CONDITIONAL type the checker keeps symbolic
     // inside the body — the object-gated utility-alias hook below never
@@ -8441,6 +8446,110 @@ function mapCollectionView(
   } finally {
     seen.delete(target);
   }
+}
+
+/** A bound data record refined without changing its storage. The checker
+ * keeps a generic spread's override type symbolic (`S & { kind: "up" }`),
+ * so its property list only knows S's constraint. Preserve S's actual shape
+ * when every companion refines an existing field with the same ABI and
+ * presence. Only scalar companion fields qualify; untouched bound fields may
+ * hold references. Ineligible forms keep the existing downstream mapping. */
+function mapBoundRecordRefinement(type: ts.Type, ctx: TypeMapperCtx): IrType | null | undefined {
+  if (!type.isIntersectionType() || !ctx.resolveTypeParam) return undefined;
+  const parts = ts.constituentTypes(type);
+  const parameters = parts.filter((part) => (part.flags & ts.TypeFlags.TypeParameter) !== 0);
+  if (parameters.length !== 1) return undefined;
+  const parameter = parameters[0]!;
+  const bound = ctx.resolveTypeParam(parameter);
+  if (bound?.kind !== "record") return undefined;
+  const concrete = ctx.resolveTypeParamTs?.(parameter);
+  if (!concrete || ctx.shapes.inProgress.has(concrete) || ctx.shapes.recursivePending(concrete))
+    return undefined;
+  const shape = ctx.shapes.get(bound.shapeId);
+  if (!shape || shape.tuple || shape.indexValue) return undefined;
+  const { checker } = ctx;
+  const dataProperties = (part: ts.Type): readonly ts.Symbol[] | null => {
+    const symbol = part.getSymbol();
+    if (
+      !(part.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) ||
+      (symbol && (symbol.flags & ts.SymbolFlags.Class) !== 0) ||
+      checker.isArrayLikeType(part) ||
+      checker.getCallSignatures(part).length > 0 ||
+      checker.getConstructSignatures(part).length > 0 ||
+      checker.getIndexInfosOfType(part).length > 0 ||
+      !recordProvenanceOk(part, ctx)
+    )
+      return null;
+    const properties = checker.getPropertiesOfType(part);
+    return properties.some(
+      (property) =>
+        (property.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0 ||
+        ts.symbolName(property).startsWith("__@"),
+    )
+      ? null
+      : properties;
+  };
+  const scalarField = (field: IrType): boolean => {
+    const scalar = (value: IrType): boolean =>
+      value.kind === "string" ||
+      value.kind === "f64" ||
+      value.kind === "bool" ||
+      value.kind === "nullT" ||
+      value.kind === "undefinedT";
+    return field.kind === "union"
+      ? ctx.unions.get(field.unionId)?.arms.every(scalar) === true
+      : scalar(field);
+  };
+  const originals = dataProperties(concrete);
+  if (!originals) return undefined;
+  const checks: { name: string; before: ts.Type; after: ts.Type }[] = [];
+  for (const part of parts) {
+    if (part === parameter) continue;
+    const properties = dataProperties(part);
+    if (!properties) return undefined;
+    const mapped = mapType(part, ctx);
+    if (mapped?.kind !== "record") return undefined;
+    const refinement = ctx.shapes.get(mapped.shapeId);
+    if (!refinement || refinement.tuple || refinement.indexValue) return undefined;
+    for (const property of properties) {
+      const name = ts.symbolName(property);
+      const original = originals.find((candidate) => ts.symbolName(candidate) === name);
+      const field = shape.fields.find((candidate) => candidate.name === name);
+      const afterField = refinement.fields.find((candidate) => candidate.name === name);
+      if (
+        !original ||
+        !field ||
+        !afterField ||
+        (original.flags & ts.SymbolFlags.Optional) !== (property.flags & ts.SymbolFlags.Optional) ||
+        field.optional !== afterField.optional ||
+        !scalarField(field.type) ||
+        !scalarField(afterField.type) ||
+        !typeEquals(field.type, afterField.type)
+      )
+        return undefined;
+      checks.push({
+        name,
+        before: checker.getTypeOfSymbol(original),
+        after: checker.getTypeOfSymbol(property),
+      });
+    }
+  }
+  // Check conflicts only after every companion qualified: excluded forms
+  // must reach their existing class/refinement/equal-constituent routes.
+  for (const { name, before, after } of checks) {
+    const combined = checker.getPropertyOfType(type, name);
+    // IR equality alone would accept conflicting literals ("down" and
+    // "up" both store strings), or never's scalar placeholder.
+    if (
+      !combined ||
+      checker.isNeverType(checker.getTypeOfSymbol(combined)) ||
+      checker.isNeverType(before) ||
+      checker.isNeverType(after) ||
+      !checker.isTypeAssignableTo(after, before)
+    )
+      return null;
+  }
+  return bound;
 }
 
 /** The narrowed-type-parameter recognizer behind mapType's early return:
