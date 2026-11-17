@@ -437,6 +437,10 @@ function buildLibFnSignatures() {
     "dyn.in": { argTypes: [DYN, STRING], result: BOOL },
     "dyn.freeze": { argTypes: [DYN], result: DYN },
     "dyn.isFrozen": { argTypes: [DYN], result: BOOL },
+    /** A boxed function whose checked native view preserves key identity.
+     * Borrows its argument and returns the same value retained; other
+     * callable representations throw SC2020 before collection mutation. */
+    "dyn.functionKey": { argTypes: [DYN], result: DYN },
     /** Object.defineProperty on a declared class field (scr_json.c): the
      * field's current value (borrowed), its FIELD_* attribute word, the
      * instance's CLASS_* integrity word, the field name and the descriptor.

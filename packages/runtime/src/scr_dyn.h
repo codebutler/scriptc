@@ -1529,6 +1529,7 @@ bool scr_dyn_is_sealed(const ScrDyn *object);
 bool scr_dyn_is_sealed_query(const ScrDyn *object);
 ScrDyn *scr_dyn_proxy_new(const ScrDyn *target, const ScrDyn *handler);
 bool scr_dyn_is_callable(const ScrDyn *value);
+ScrDyn *scr_dyn_function_key(ScrDyn *value);
 ScrDyn *scr_dyn_proxy_get(const ScrDyn *proxy, const ScrStr *key);
 bool scr_dyn_proxy_has(const ScrDyn *proxy, const ScrStr *key);
 ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key);

@@ -1225,6 +1225,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_function_key",
+  "message": "collection function key requires an identity-preserving native callable",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_key_set",
   "message": "Sparse array writes are not supported yet",
   "code": "SC2020"

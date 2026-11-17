@@ -965,6 +965,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
+  "dyn.functionKey",
   "dyn.getOwnPropertyNames",
   "dyn.ownKeys",
   "dyn.getOwnPropertySymbols",

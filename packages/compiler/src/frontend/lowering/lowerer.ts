@@ -19126,6 +19126,31 @@ export class Lowerer {
       const view = this.islandFunctionViewAt(value, node, expected);
       if (view !== null) return view;
     }
+    // A typed protocol property can remain dynamic after its presence guard.
+    // Only ordinary boxed functions share their identity with checked views;
+    // proxies and constructors keep a runtime refusal before any insertion.
+    if (
+      value.type.kind === "dyn" &&
+      expected.kind === "func" &&
+      typeEquals(this.mapTypeOf(this.typeOf(node)) ?? DYN, expected) &&
+      canAdaptDynFuncTo(
+        expected,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    ) {
+      return this.coerceInto(
+        node,
+        {
+          kind: "libCall",
+          fn: "dyn.functionKey",
+          args: [value],
+          type: DYN,
+          loc: value.loc,
+        },
+        expected,
+      );
+    }
     const source = (
       value.type.kind === "union" ? (this.unions.get(value.type.unionId)?.arms ?? []) : [value.type]
     ).filter((type) => !isUnitType(type));

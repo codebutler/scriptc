@@ -1451,6 +1451,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.objectTag": "scr_dyn_object_tag_of",
   "dyn.freeze": "scr_dyn_freeze",
   "dyn.isFrozen": "scr_dyn_is_frozen",
+  "dyn.functionKey": "scr_dyn_function_key",
   "class.defineField": "scr_class_define_field",
   "class.definedBits": "scr_class_defined_bits",
   "class.definedValue": "scr_class_defined_value",

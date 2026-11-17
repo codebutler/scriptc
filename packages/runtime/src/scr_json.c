@@ -12756,6 +12756,17 @@ bool scr_dyn_is_callable(const ScrDyn *value) {
   return scr_dyn_ref_typeof_is(value, "function");
 }
 
+/* Checked function views adopt this closure's identity. Proxies and class
+ * constructors do not, so they cannot enter a typed function-key collection
+ * through this conversion. Borrow value; return the same box at +1. */
+ScrDyn *scr_dyn_function_key(ScrDyn *value) {
+  if (value->kind == SCR_DYN_FUNC && value->v.fn.class_obj == NULL)
+    return scr_dyn_retain(value);
+  static const char message[] = "collection function key requires an identity-preserving native callable";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  return NULL;
+}
+
 int scr_dyn_function_kind(const ScrDyn *value) {
   while (value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
   return value->kind == SCR_DYN_FUNC
