@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/observed-method-getter-receiver.ts"
+ ],
+ "diags": []
+}

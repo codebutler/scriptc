@@ -202,6 +202,24 @@ export function lowerClassCallbackAssign(
   };
 }
 
+/** The bag supplies storage and prototypes; accessors receive the saved
+ * class instance, not its internal property table. */
+function readCallback(
+  lowerer: Lowerer,
+  value: IrExpr,
+  key: IrExpr,
+  receiver: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.reflectGet",
+    args: [value, lowerer.coerceToExpected(key, DYN), lowerer.coerceToExpected(receiver, DYN)],
+    type: DYN,
+    loc,
+  };
+}
+
 /** Read the property before arguments run, retaining callback identity
  * and the original native receiver for JavaScript's `this` binding. */
 export function classCallbackValue(
@@ -215,11 +233,11 @@ export function classCallbackValue(
   const value = varRef(bag.id, DYN, loc);
   const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
   const result: IrExpr = observedSlot(lowerer, receiver, name, loc)
-    ? { kind: "dynKeyGet", value, key, type: DYN, loc }
+    ? readCallback(lowerer, value, key, receiver, loc)
     : {
         kind: "ternary",
         cond: callbackPresent(value, key, loc),
-        then: { kind: "dynKeyGet", value, key, type: DYN, loc },
+        then: readCallback(lowerer, value, key, receiver, loc),
         else_: lowerer.coerceToExpected(fallback, DYN),
         type: DYN,
         loc,
@@ -454,7 +472,7 @@ export function classCallbackCall(
           kind: "ternary",
           cond: { kind: "dynTest", test: "undefined", value, type: BOOL, loc },
           then: unreplaced ? varRef(bag.id, DYN, loc) : dynUndefinedExpr(loc),
-          else_: { kind: "dynKeyGet", value, key, type: DYN, loc },
+          else_: readCallback(lowerer, value, key, receiver, loc),
           type: DYN,
           loc,
         },
