@@ -6,6 +6,7 @@ import { expect, test } from "vitest";
 import {
   clearResolveCaches,
   projectDtsRuntimeSibling,
+  registerRelativeJsEntry,
   resolveBareModule,
   rememberProjectTypes,
   rememberedProjectTypes,
@@ -438,6 +439,33 @@ test("an answer of an earlier load is asked again by the next, and dropped when 
     expect(rememberedProjectTypes(config, node10).size).toBe(1);
     clearResolveCaches();
     expect(rememberedProjectTypes(config, node10).size).toBe(0);
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("relative runtime pair registrations reset for each program load", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-relative-pair-reset-"));
+  try {
+    const vendor = join(dir, "vendor");
+    await mkdir(vendor);
+    const entry = join(dir, "main.ts");
+    const declaration = join(vendor, "value.d.mts");
+    const runtime = join(vendor, "value.mjs");
+    await Promise.all([
+      writeFile(join(dir, "package.json"), '{"type":"module"}'),
+      writeFile(join(vendor, "package.json"), '{"type":"module"}'),
+      writeFile(declaration, "export declare const value:number;"),
+      writeFile(runtime, "export const value=3;"),
+    ]);
+    clearResolveCaches();
+    setProjectRealm(entry);
+    expect(registerRelativeJsEntry(entry, "./vendor/value.mjs")).toEqual({ declaration, runtime });
+    expect(projectDtsRuntimeSibling(declaration)).toBe(runtime);
+    setProjectRealm(entry);
+    expect(projectDtsRuntimeSibling(declaration)).toBeNull();
+    expect(registerRelativeJsEntry(entry, "./vendor/value.mjs")).toEqual({ declaration, runtime });
   } finally {
     clearResolveCaches();
     await rm(dir, { recursive: true, force: true });

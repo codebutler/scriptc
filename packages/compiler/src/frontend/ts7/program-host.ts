@@ -281,6 +281,14 @@ export class Ts7Host {
     this.virtualFiles.set(key, content);
   }
 
+  /** Resolution changed after discovering a concrete runtime import. The
+   * next snapshot must forget cached declaration resolution and file misses. */
+  invalidateFileSystem(): void {
+    this.ensureOpen();
+    this.invalidateAll = true;
+    this.aliasMembers.clear();
+  }
+
   /** tsgo's own tsconfig parser (extends chains resolved server-side) — the
    * 7-world replacement for ts.readConfigFile + ts.parseJsonConfigFileContent.
    * Returns raw option values (strings for enum-ish knobs) and the resolved

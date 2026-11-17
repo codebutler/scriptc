@@ -1,0 +1,15 @@
+import {type Inline} from "./vendor/inline.mjs";
+export {type InlineExport} from "./vendor/inline-export.mjs";
+import { make, bump, current, type Item } from "./vendor/entry.mjs";
+import { create, type Legacy } from "./vendor/legacy.cjs";
+import { value, type Value } from "./vendor/value.js";
+import type { Unused } from "./vendor/unused.mjs";
+const item: Item = make(3);
+console.log("esm", item.value, bump(), current(), bump(), current());
+const old: Legacy = create(7);
+console.log("cjs", old.value);
+const shaped: Value = value;
+console.log("js", shaped.label);
+const local: Unused = { id: 9 };
+console.log("type only", local.id);
+const inline:Inline={id:11};console.log("inline",inline.id);

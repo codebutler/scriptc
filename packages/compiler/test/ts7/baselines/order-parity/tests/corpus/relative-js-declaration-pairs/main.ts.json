@@ -1,0 +1,11 @@
+{
+ "order": [
+  "<repo>/tests/corpus/relative-js-declaration-pairs/vendor/inline.d.mts",
+  "<repo>/tests/corpus/relative-js-declaration-pairs/vendor/inline-export.d.mts",
+  "<repo>/tests/corpus/relative-js-declaration-pairs/vendor/entry.d.mts",
+  "<repo>/tests/corpus/relative-js-declaration-pairs/vendor/legacy.d.cts",
+  "<repo>/tests/corpus/relative-js-declaration-pairs/vendor/value.d.ts",
+  "<repo>/tests/corpus/relative-js-declaration-pairs/main.ts"
+ ],
+ "diags": []
+}

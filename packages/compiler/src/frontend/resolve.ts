@@ -290,6 +290,8 @@ let projectRealmSet = false;
 export function setProjectRealm(entryPath: string): void {
   projectRealmPkgJson = nearestPkgJsonPath(entryPath);
   projectRealmSet = true;
+  relativeJsDeclarations.clear();
+  relativeJsEntries.clear();
 }
 
 /** Declaration file extensions and the runtime file Node loads for each. */
@@ -299,7 +301,33 @@ const DTS_RUNTIME_SIBLINGS: readonly (readonly [string, string])[] = [
   [".d.cts", ".cjs"],
 ];
 
+/** Exact relative runtime entries discovered in this load, independently of
+ * package realms. Bare package resolution never registers an entry here. */
+const relativeJsDeclarations = new Map<string, string>();
+const relativeJsEntries = new Set<string>();
+
+export function registerRelativeJsEntry(
+  fromFile: string,
+  specifier: string,
+): { declaration: string; runtime: string } | null {
+  if (!isRelativeSpecifier(specifier) || !/\.(?:mjs|cjs|js)$/.test(specifier)) return null;
+  const runtime = resolve(dirname(resolve(fromFile)), specifier);
+  if (isNodeModulesPath(runtime) || !isFile(runtime)) return null;
+  const declaration = loadAsFile(runtime);
+  if (declaration === null || !/\.d\.(?:mts|cts|ts)$/.test(declaration)) return null;
+  if (relativeJsDeclarations.has(declaration)) return null;
+  relativeJsDeclarations.set(declaration, runtime);
+  relativeJsEntries.add(runtime);
+  return { declaration, runtime };
+}
+
+export function isRelativeJsEntry(path: string): boolean {
+  return relativeJsEntries.has(path);
+}
+
 export function projectDtsRuntimeSibling(path: string): string | null {
+  const paired = relativeJsDeclarations.get(path);
+  if (paired !== undefined) return paired;
   if (path.includes("/node_modules/") || path.includes("\\node_modules\\")) return null;
   // A project without any package.json is one realm, exactly like a project
   // inside one: its declarations and their runtime siblings walk up to
@@ -1256,6 +1284,8 @@ export function clearResolveCaches(): void {
   workspaceMembersCache.clear();
   projectRealmPkgJson = null;
   projectRealmSet = false;
+  relativeJsDeclarations.clear();
+  relativeJsEntries.clear();
   projectPathMappings = null;
   answeredProjectTypes.clear();
 }

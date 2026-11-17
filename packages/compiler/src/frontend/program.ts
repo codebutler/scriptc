@@ -65,6 +65,8 @@ import {
   nearestPkgJsonPath,
   packageImportTarget,
   projectDtsRuntimeSibling,
+  registerRelativeJsEntry,
+  isRelativeJsEntry,
   resolveBareModule,
   resolveNodeRuntimeModule,
   resolveProjectModule,
@@ -99,7 +101,10 @@ import {
 } from "./npm-static.js";
 import type { Defines } from "./defines.js";
 import { isPrunedNpmReexport, planNpmStaticReexports } from "./npm-static-prune.js";
-import { npmStaticTypeExportPlan } from "./npm-static-type-exports-host.js";
+import {
+  declarationTypeExportPlan,
+  npmStaticTypeExportPlan,
+} from "./npm-static-type-exports-host.js";
 import { isNpmStaticSubclassArgument } from "./npm-static-subtyping.js";
 import {
   npmStaticDeclarationReexports,
@@ -807,6 +812,8 @@ export interface LoadResult {
    * declaration surface. */
   externalTypeSpecifiersByFile: ReadonlyMap<string, readonly string[]>;
   projectWorld: () => ts.Program;
+  /** Relative JavaScript implementations are checked against their authored declarations. */
+  checkDeclaredProject?: boolean;
   /** The program checked with the libraries the project's `lib` names
    * beside scriptc's own (projectOnlyLibraries): the world in which the
    * project's own tsc resolves a name such as `HTMLElement`. Preflight asks
@@ -1083,6 +1090,8 @@ function erasedSpecifier(specifier: ts.Node): boolean {
   if (parent === undefined) return false;
   if (ts.isImportDeclaration(parent)) return erasedTypeOnlyImport(parent);
   if (ts.isExportDeclaration(parent)) return parent.isTypeOnly;
+  if (ts.isExternalModuleReference(parent) && ts.isImportEqualsDeclaration(parent.parent))
+    return parent.parent.isTypeOnly;
   return ts.isLiteralTypeNode(parent);
 }
 
@@ -1292,7 +1301,9 @@ function entryPackageProgramRoots7(
   program: ts.Program,
   entryPath: string,
   packageRoots: PackageRoots | null,
-): string[] {
+  runtimeImport?: (from: string, specifier: string) => boolean,
+): { roots: string[]; changed: boolean } {
+  let changed = false;
   const belongsToEntry = entryPackageFilePredicate(entryPath);
   const roots = new Set<string>();
   /** The file an edge adds to the roots, or null: a file the program
@@ -1301,10 +1312,15 @@ function entryPackageProgramRoots7(
     // The project edge, from any program file: a relative import, or a
     // tsconfig path, that lands on the entry package's JavaScript or on an
     // opted-in package's.
+    changed = (runtimeImport?.(from, spec) ?? false) || changed;
     const target = resolveProjectModule(from, spec);
+    if (packageRoots?.declared === true && target !== null && isRelativeJsEntry(target))
+      return null;
     if (
       target !== null &&
-      (belongsToEntry(target) || npmStaticPackageOfPath(target) !== null) &&
+      (belongsToEntry(target) ||
+        isRelativeJsEntry(target) ||
+        npmStaticPackageOfPath(target) !== null) &&
       isJsSourceFileName(target)
     )
       return program.getSourceFile(target) === undefined ? target : null;
@@ -1335,7 +1351,7 @@ function entryPackageProgramRoots7(
   for (const sf of program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile) continue;
     for (const specifier of sf.imports) {
-      if (!ts.isStringLiteralLike(specifier)) continue;
+      if (!ts.isStringLiteralLike(specifier) || erasedSpecifier(specifier)) continue;
       const root = rootOf(sf.fileName, specifier.text, moduleSpecifierKind7(specifier));
       if (root !== null) roots.add(root);
     }
@@ -1350,7 +1366,7 @@ function entryPackageProgramRoots7(
       }
     }
   }
-  return [...roots].sort();
+  return { roots: [...roots].sort(), changed };
 }
 
 /** TS 7's ESNext temporal declarations: a lib slice scriptc adds only for
@@ -1442,6 +1458,7 @@ function loadProgram7(
   /** Shape inference's typed overlay (shape-inference/overlay.ts):
    * rewritten package JavaScript for the lowering world, or null. */
   overlayer?: (program: ts.Program, round: number) => ReadonlyMap<string, string> | null,
+  runtimeImport?: (from: string, specifier: string) => boolean,
 ): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
   const configuredPaths = config.options["paths"];
@@ -1526,11 +1543,18 @@ function loadProgram7(
   }
   try {
     for (let pass = 0; pass < 32; pass++) {
+      const runtimeRoots = entryPackageProgramRoots7(
+        program,
+        entryPath,
+        packageRoots,
+        runtimeImport,
+      );
+      if (runtimeRoots.changed) host.invalidateFileSystem();
       const candidates = [
         ...(nodeTypes === null
           ? fallbackModuleRoots7(program, host)
           : nodeTypesSupplementRoots7(program, host)),
-        ...entryPackageProgramRoots7(program, entryPath, packageRoots),
+        ...runtimeRoots.roots,
         ...createRequireProgramRoots7(program),
         ...boundedDynamicImportRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
@@ -1548,7 +1572,7 @@ function loadProgram7(
         config.typeResolution === undefined || config.configFile === null
           ? null
           : typesAsProject7(program, config.configFile, config.typeResolution, options.paths);
-      if (extraRoots.length === 0 && asProject === null) break;
+      if (extraRoots.length === 0 && asProject === null && !runtimeRoots.changed) break;
       for (const root of extraRoots) programRoots.push(root);
       if (asProject !== null) {
         const paths: Record<string, string[]> = { ...options.paths };
@@ -2168,6 +2192,19 @@ export function loadProgram(
     hideFile: () => false,
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
+  let hasRelativeDeclarations = false;
+  const prepareRuntimeImport = (from: string, specifier: string): boolean => {
+    const pair = registerRelativeJsEntry(from, specifier);
+    if (pair === null) return false;
+    hasRelativeDeclarations = true;
+    const plan = declarationTypeExportPlan(services, [pair]);
+    for (const [file, text] of plan.copies) host.addVirtualFile(file, text);
+    for (const [file, typedefs] of plan.typedefs) {
+      const source = host.sourceText(file);
+      if (source !== null) host.addVirtualFile(file, `${source}\n${typedefs}\n`);
+    }
+    return true;
+  };
   // The edges of a package file as a host serves it (the lowering world's
   // rewritten text, the project world's text as written), read once per
   // load and host.
@@ -2195,7 +2232,7 @@ export function loadProgram(
         authoredHost,
         entryPath,
         externalTypes,
-        npmStaticPackages.length > 0
+        npmStaticPackages.length > 0 || hasRelativeDeclarations
           ? { edges: edgesOfUnloaded(authoredHost), declared: true }
           : null,
       );
@@ -2249,6 +2286,7 @@ export function loadProgram(
         (jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0")
         ? shapeOverlayer
         : undefined,
+      prepareRuntimeImport,
     );
     // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
     const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];
@@ -2257,8 +2295,9 @@ export function loadProgram(
     return {
       ...load,
       services,
+      checkDeclaredProject: hasRelativeDeclarations,
       projectWorld:
-        npmStaticPackages.length === 0
+        npmStaticPackages.length === 0 && !hasRelativeDeclarations
           ? load.projectWorld
           : () =>
               // Check authored code against the package's published declarations.
@@ -8394,9 +8433,11 @@ function preflightGate7(load: LoadResult): PreflightGate {
     tscWorld === undefined
       ? errorsOf(program)
       : keptErrors(tscWorld.program, tscWorld.diagnostics());
-  if (tscErrors.length > 0) {
+  if (tscErrors.length > 0 || load.checkDeclaredProject === true) {
     const world =
-      tscWorld === undefined || tscWorld.declWorldFallback === true
+      load.checkDeclaredProject === true ||
+      tscWorld === undefined ||
+      tscWorld.declWorldFallback === true
         ? load.projectWorld()
         : (tscWorld.projectWorld ?? tscWorld.program);
     // The errors a tsconfig setting scriptc does not follow produces, one

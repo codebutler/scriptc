@@ -27,18 +27,24 @@ export interface NpmStaticTypeExportPlan {
 
 /** The copy path of a declaration file. */
 function copyPathOf(declarationFile: string): string {
-  return declarationFile.replace(/\.d\.ts$/, NPM_STATIC_TYPES_SUFFIX);
+  return declarationFile.replace(/\.d\.(mts|cts|ts)$/, (_, extension: string) =>
+    NPM_STATIC_TYPES_SUFFIX.replace(/ts$/, extension),
+  );
 }
 
 /** The declaration file a relative specifier names from `fromFile`, or null. */
 function declarationTargetOf(fromFile: string, specifier: string): string | null {
   const base = resolvePath(dirname(fromFile), specifier);
   const candidates = [
+    ...(base.endsWith(".mjs") ? [base.slice(0, -4) + ".d.mts"] : []),
+    ...(base.endsWith(".cjs") ? [base.slice(0, -4) + ".d.cts"] : []),
+    base,
     `${base}.d.ts`,
     `${base.replace(/\.(c|m)?js$/, "")}.d.ts`,
     resolvePath(base, "index.d.ts"),
   ];
-  for (const candidate of candidates) if (trackedFileExists(candidate)) return candidate;
+  for (const candidate of candidates)
+    if (/\.d\.(?:mts|cts|ts)$/.test(candidate) && trackedFileExists(candidate)) return candidate;
   return null;
 }
 
@@ -47,6 +53,8 @@ function specifierFor(fromFile: string, target: string): string {
   const rel = relative(dirname(fromFile), target)
     .split("\\")
     .join("/")
+    .replace(/\.d\.mts$/, ".mjs")
+    .replace(/\.d\.cts$/, ".cjs")
     .replace(/\.d\.ts$/, "");
   return rel.startsWith(".") ? rel : `./${rel}`;
 }
@@ -72,6 +80,23 @@ export function npmStaticTypeExportPlan(
   services: FrontendServices,
   entryPath: string,
   packages: readonly string[],
+): NpmStaticTypeExportPlan {
+  const entries: { declaration: string; runtime: string }[] = [];
+  for (const pkg of packages) {
+    const declared = resolveBareModule(entryPath, pkg, "types-only");
+    if (declared === null || declared.packageName !== pkg || !declared.typesFile.endsWith(".d.ts"))
+      continue;
+    const runtime = resolveBareModule(entryPath, pkg, "js-only");
+    if (runtime !== null && isJsSourceFileName(runtime.typesFile))
+      entries.push({ declaration: declared.typesFile, runtime: runtime.typesFile });
+  }
+  return declarationTypeExportPlan(services, entries);
+}
+
+/** The same data-only projection for exact declaration/runtime pairs. */
+export function declarationTypeExportPlan(
+  services: FrontendServices,
+  entries: readonly { declaration: string; runtime: string }[],
 ): NpmStaticTypeExportPlan {
   const copies = new Map<string, string>();
   const typedefs = new Map<string, string>();
@@ -207,16 +232,11 @@ export function npmStaticTypeExportPlan(
     for (const key of reachedFrom.keys()) dataMemo.set(key, true);
     return true;
   };
-  for (const pkg of packages) {
-    const declared = resolveBareModule(entryPath, pkg, "types-only");
-    if (declared === null || declared.packageName !== pkg || !declared.typesFile.endsWith(".d.ts"))
-      continue;
-    const runtime = resolveBareModule(entryPath, pkg, "js-only");
-    if (runtime === null || !isJsSourceFileName(runtime.typesFile)) continue;
-    const runtimeText = packageSourceText(runtime.typesFile);
+  for (const { declaration, runtime } of entries) {
+    const runtimeText = packageSourceText(runtime);
     if (runtimeText === null) continue;
-    const { types, values } = typesOf(declared.typesFile, new Set());
-    const declaredByRuntime = runtimeTypeNames(services, runtime.typesFile, runtimeText);
+    const { types, values } = typesOf(declaration, new Set());
+    const declaredByRuntime = runtimeTypeNames(services, runtime, runtimeText);
     // Only data shapes: a type with methods describes the package's
     // JavaScript objects, which stay as the JavaScript types them.
     const exported = [...types.values()]
@@ -228,12 +248,9 @@ export function npmStaticTypeExportPlan(
       )
       .map(({ decl }) => decl);
     if (exported.length === 0) continue;
-    copy(declared.typesFile);
-    const specifier = specifierFor(runtime.typesFile, copyPathOf(declared.typesFile));
-    typedefs.set(
-      runtime.typesFile.split("\\").join("/"),
-      npmStaticTypedefBlock(exported, specifier),
-    );
+    copy(declaration);
+    const specifier = specifierFor(runtime, copyPathOf(declaration));
+    typedefs.set(runtime.split("\\").join("/"), npmStaticTypedefBlock(exported, specifier));
   }
   return { copies, typedefs };
 }
