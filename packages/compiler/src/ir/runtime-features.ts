@@ -118,6 +118,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The generic Promise statics build and settle their capability's promise
   // with dyn values (scr_dyn_new_promise, scr_dyn_promise_resolve).
   "promise.genericStatic",
+  "promise.allSettledChecked",
   "fs.callbackCall",
   "fs.callbackGlob",
   "fs.callbackValue",
@@ -1822,10 +1823,9 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "newPromise" && node.resolves === true) ||
       (node.kind === "promiseWithResolvers" && resolversOfDyn(node.type, tables())),
   }),
-  /** The Promise statics through Function.prototype.call with a foreign
-   * constructor (scr_js_promise_generic.c): NewPromiseCapability(C), the
-   * C.resolve lookup and the iterator protocol. */
-  promiseGeneric: rule({ fns: ["promise.genericStatic"] }),
+  /** Generic Promise statics and checked allSettled use the incremental
+   * iterator walk in scr_js_promise_generic.c. */
+  promiseGeneric: rule({ fns: ["promise.genericStatic", "promise.allSettledChecked"] }),
   /** EventEmitter and the stream classes as untyped constructor values
    * (scr_dyn_builtin_class.c), which call listeners through the dyn-invoke
    * unit, render unhandled 'error' payloads through the inspect unit and
@@ -1898,6 +1898,7 @@ const RUNTIME_FEATURE_RULES = {
       // The generic Promise statics call C's resolve and the iterable's
       // next/return through scr_dyn_invoke.
       "promise.genericStatic",
+      "promise.allSettledChecked",
     ],
     // Constant-key reads of Object.prototype member names, and of
     // Array.prototype method names on arrays, answer the inherited member

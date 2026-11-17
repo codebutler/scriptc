@@ -36,10 +36,9 @@
  * Promise, xs)` therefore keeps the native microtask ordering, and
  * `Promise.resolve.call(Promise, p)` answers p itself.
  *
- * The unit links only into programs that spell one of these calls in a
- * JavaScript source (the frontend marks promise.genericStatic there), so
- * typed programs keep their exact executables: their IR never names
- * scr_js_promise_generic_call. */
+ * The checked allSettled entry also uses this iterator walk, with the
+ * compiled reader that exposes native class instances' `then` members.
+ * It selects %Promise% directly without a constructor lookup. */
 #include "scr_runtime.h"
 
 #include <stdio.h>
@@ -589,10 +588,10 @@ static ScrDyn *js_pg_reject_abrupt(JsPgCapability *cap) {
  * itself and a freshly fulfilled/adopted promise otherwise; a foreign
  * constructor's own `resolve` is called with C as the receiver. */
 static ScrDyn *js_pg_resolve_one(bool native, const ScrDyn *ctor, const ScrDyn *resolve,
-                                 const ScrDyn *value) {
+                                 const ScrDyn *value, const ScrDyn *reader) {
   if (native) {
     if (value->kind == SCR_DYN_PROMISE) return scr_dyn_retain((ScrDyn *)value);
-    ScrPromise *promise = scr_dyn_promise_resolve(value, NULL);
+    ScrPromise *promise = scr_dyn_promise_resolve(value, reader);
     ScrDyn *boxed = scr_dyn_new_promise(promise);
     scr_promise_release(promise);
     return boxed;
@@ -615,7 +614,8 @@ static bool js_pg_then(ScrDyn *promise, ScrDyn *const *args, size_t argc) {
 /* PerformPromiseAll / AllSettled / Any / Race over the iterable. Answers
  * the capability's promise, or NULL with the exception pending (a reject
  * that itself threw). */
-static ScrDyn *js_pg_combine(int mode, const ScrDyn *ctor, bool native, const ScrDyn *iterable) {
+static ScrDyn *js_pg_combine(int mode, const ScrDyn *ctor, bool native, const ScrDyn *iterable,
+                             const ScrDyn *reader) {
   JsPgCapability cap;
   if (!js_pg_new_capability(&cap, ctor, native)) return NULL;
 
@@ -684,7 +684,7 @@ static ScrDyn *js_pg_combine(int mode, const ScrDyn *ctor, bool native, const Sc
       answer = scr_dyn_retain(cap.promise);
       break;
     }
-    ScrDyn *next_promise = js_pg_resolve_one(native, ctor, resolve, value);
+    ScrDyn *next_promise = js_pg_resolve_one(native, ctor, resolve, value, reader);
     scr_dyn_release(value);
     if (!next_promise) {
       js_pg_close(iterator);
@@ -741,6 +741,12 @@ static ScrDyn *js_pg_combine(int mode, const ScrDyn *ctor, bool native, const Sc
   scr_dyn_release(resolve);
   js_pg_capability_release(&cap);
   return answer;
+}
+
+/* The checked input is consumed directly: a `then` getter can change
+ * later iterator steps. Both arguments are borrowed; the answer is +1. */
+ScrDyn *scr_js_promise_all_settled_checked(const ScrDyn *iterable, const ScrDyn *reader) {
+  return js_pg_combine(JS_PG_ALL_SETTLED, NULL, true, iterable, reader);
 }
 
 /* PromiseResolve(C, x): %Promise% answers a promise of its own
@@ -838,7 +844,7 @@ ScrDyn *scr_js_promise_generic_call(const ScrStr *name, const ScrDyn *thisArg, c
     return NULL;
   }
   bool native = js_pg_is_promise(thisArg);
-  if (mode >= 0) return js_pg_combine(mode, thisArg, native, arg);
+  if (mode >= 0) return js_pg_combine(mode, thisArg, native, arg, NULL);
   if (resolve_mode) return js_pg_resolve_call(thisArg, arg, native);
   if (reject_mode) return js_pg_reject_call(thisArg, arg, native);
   { static const char refused[] = "Promise static is not supported"; scr_throw_error_msg_code(SCR_ERR_TYPE, refused, sizeof refused - 1, "SC2020"); }

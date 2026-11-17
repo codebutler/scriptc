@@ -757,6 +757,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // resolve — every throw (a non-object this, a non-constructor, a throwing
   // executor or resolve) rejects the capability or propagates.
   "promise.genericStatic",
+  // The checked iterable and then-reader execute user code.
+  "promise.allSettledChecked",
   "dyn.hasKey",
   "dyn.in",
   "child.kill",

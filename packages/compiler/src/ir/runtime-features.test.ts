@@ -308,6 +308,16 @@ describe("runtime feature snapshots", () => {
     });
   });
 
+  test("checked allSettled links the streaming iterator and promise units", () => {
+    const mod = module();
+    mod.functions[0]!.body.push(call("promise.allSettledChecked"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({
+      promiseGeneric: true,
+      dynInvoke: true,
+      dynAsync: true,
+    });
+  });
+
   test("constant-key reads of inherited method names link the dyn-invoke unit", () => {
     const reads = (key: string): IrModule => {
       const mod = module();

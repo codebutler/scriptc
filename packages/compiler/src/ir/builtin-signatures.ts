@@ -559,6 +559,7 @@ function buildLibFnSignatures() {
      * one argument the algorithm takes. Answers the capability's promise as
      * a checked-dynamic value (a foreign C may answer anything). */
     "promise.genericStatic": { argTypes: [STRING, DYN, DYN], result: DYN },
+    "promise.allSettledChecked": { argTypes: [DYN, DYN], result: DYN },
     /** Bare `typeof v` on a dyn value AS A STRING (arg: the dyn value,
      * borrowed; result: an owned string) — the dyn kind's JS answer:
      * undefined→"undefined", null/object/array/bytes→"object" (JS's oldest

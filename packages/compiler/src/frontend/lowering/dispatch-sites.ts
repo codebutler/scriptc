@@ -19,6 +19,7 @@ const RUNTIME_STEP_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // The Promise statics' generic algorithms walk the iterable in the
   // runtime, a compiled generator among the values they step.
   "promise.genericStatic",
+  "promise.allSettledChecked",
   "dyn.destructureRest",
   "dyn.mathFold",
   "dyn.nativeSetNew",

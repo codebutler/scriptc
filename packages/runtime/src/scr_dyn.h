@@ -1883,6 +1883,11 @@ ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
  * (resolve/reject). */
 ScrDyn *scr_js_promise_generic_call(const ScrStr *name, const ScrDyn *thisArg, const ScrDyn *arg);
 
+/* Native Promise.allSettled over a checked iterable, consumed one entry at
+ * a time. `reader` reads a program class instance's `then`. Both arguments
+ * are borrowed; the answer is the native promise boxed as dyn, +1. */
+ScrDyn *scr_js_promise_all_settled_checked(const ScrDyn *iterable, const ScrDyn *reader);
+
 /* %Iterator%, %Iterator.prototype% and Iterator.from (scr_js_iterator.c,
  * linked only into programs that reach them): the live prototype holds
  * the interned helper methods every iterator answers; `new Iterator()`

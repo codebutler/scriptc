@@ -1296,6 +1296,33 @@ export function lowerPromiseStaticCall(
       );
     }
     if (member === "allSettled") {
+      const sourceType = lowerer.typeOf(argNode);
+      // Unknown-element arrays use the checked array representation, just
+      // like JavaScript inputs. Keep the runtime iterable/thenable protocol
+      // and validate its settled payload against the checker's result.
+      if (
+        lowerer.checker.isArrayType(sourceType) &&
+        lowerer.mapTypeOf(sourceType)?.kind === "dyn"
+      ) {
+        const resultType = settledResultType(lowerer, call);
+        if (
+          resultType?.kind === "promise" &&
+          (resultType.inner.kind === "array" || resultType.inner.kind === "dyn")
+        ) {
+          const source = lowerer.lowerExpr(argNode);
+          const result: IrExpr = {
+            kind: "libCall",
+            fn: "promise.allSettledChecked",
+            args: [lowerer.coerceToExpected(source, DYN), thenReader(lowerer, loc)],
+            type: DYN,
+            loc,
+          };
+          const converted = lowerer.coerceToExpected(result, resultType);
+          if (!typeEquals(converted.type, resultType))
+            lowerer.noLowering("Promise.allSettled with this checked result type", call);
+          return converted;
+        }
+      }
       const settled = lowerTupleAllSettled(lowerer, call, entriesArgument(argNode));
       if (settled) return settled;
     }
