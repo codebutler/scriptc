@@ -8016,9 +8016,15 @@ export function lowerVarDecl(
               );
   } catch (e) {
     if (e instanceof PoisonError) {
-      const salvaged = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
-      if (salvaged && salvaged.kind !== "void") {
-        lowerer.declareLocal(decl.name, decl.name.text, salvaged, isLet);
+      // A method in this initializer may already have captured the binding.
+      // Keep its TDZ box across retry; replacing the scope entry would leave
+      // later captures pointing at a different, never initialized local.
+      const captured = declSymbol && lowerer.ctx.tdzPredeclared.has(declSymbol);
+      if (!captured) {
+        const salvaged = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+        if (salvaged && salvaged.kind !== "void") {
+          lowerer.declareLocal(decl.name, decl.name.text, salvaged, isLet);
+        }
       }
     }
     throw e;
