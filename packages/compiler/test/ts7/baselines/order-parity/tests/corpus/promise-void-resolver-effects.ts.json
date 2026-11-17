@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/promise-void-resolver-effects.ts"
+ ],
+ "diags": []
+}

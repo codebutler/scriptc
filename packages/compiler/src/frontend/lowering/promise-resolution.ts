@@ -19,6 +19,8 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { InternalCompilerError } from "../../errors.js";
+import { bodyReadsArguments } from "../arguments-usage.js";
+import { bindingNeverReassigned } from "../binding-writes.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
 import * as ts from "../ts7/adapter.js";
@@ -39,6 +41,76 @@ const PRIMITIVE =
   ts.TypeFlags.Void |
   ts.TypeFlags.Null |
   ts.TypeFlags.Never;
+
+/** A direct call of an immutable inline Promise<void> executor's resolver.
+ * Its native closure has no payload slot, but a supplied void expression
+ * must still run before settlement. Other zero-parameter function values
+ * can observe arguments through their origin and keep ordinary completion. */
+export function lowerVoidResolveCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  callee: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (
+    callee.type.kind !== "func" ||
+    callee.type.params.length !== 0 ||
+    callee.type.rest === true ||
+    callee.type.ret.kind !== "void" ||
+    call.arguments.nodes.length !== 1
+  )
+    return null;
+  const argument = call.arguments.nodes[0]!;
+  const read = withoutParentheses(call.expression);
+  if (ts.isSpreadElement(argument) || !ts.isIdentifier(read)) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(read);
+  const parameter = symbol?.valueDeclaration;
+  if (symbol === undefined || parameter === undefined || !ts.isParameter(parameter)) return null;
+  const executor = parameter.parent;
+  if (
+    (!ts.isArrowFunction(executor) && !ts.isFunctionExpression(executor)) ||
+    executor.parameters.nodes[0] !== parameter ||
+    parameter.initializer ||
+    parameter.dotDotDotToken ||
+    parameter.questionToken ||
+    (ts.isFunctionExpression(executor) && bodyReadsArguments(executor))
+  )
+    return null;
+  let operand: ts.Node = executor;
+  while (ts.isParenthesizedExpression(operand.parent)) operand = operand.parent;
+  const construction = operand.parent;
+  if (
+    !ts.isNewExpression(construction) ||
+    construction.arguments?.nodes[0] !== operand ||
+    !ts.isIdentifier(construction.expression)
+  )
+    return null;
+  const constructor = lowerer.checker.getSymbolAtLocation(construction.expression);
+  if (
+    constructor === undefined ||
+    ts.symbolName(constructor) !== "Promise" ||
+    !lowerer.isStdlibSymbol(constructor)
+  )
+    return null;
+  const promise = lowerer.mapTypeOf(lowerer.typeOf(construction));
+  if (
+    promise?.kind !== "promise" ||
+    promise.inner.kind !== "void" ||
+    lowerer.mapTypeOf(lowerer.typeOf(argument))?.kind !== "void" ||
+    !bindingNeverReassigned(lowerer.bindingScope(), symbol, parameter)
+  )
+    return null;
+  const value = lowerer.lowerExpr(argument);
+  // The callee is an immutable parameter read, so delaying that read past
+  // the operand has no observable effect. Keep the existing native ABI.
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: { kind: "callValue", callee, args: [], type: VOID, loc },
+    type: VOID,
+    loc,
+  };
+}
 
 /** Whether a class member is, or may be, named `then`. */
 function mayBeNamedThen(member: ts.ClassElement): boolean {

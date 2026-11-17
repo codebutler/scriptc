@@ -1,3 +1,4 @@
+import { lowerVoidResolveCall } from "./promise-resolution.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { mayReplacePrototype } from "./class-method-mutations.js";
@@ -3014,6 +3015,8 @@ function lowerCallThroughValueRaw(
     const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
     return { kind: "dynCall", callee: boxed, calleeName, args, type: DYN, loc };
   }
+  const voidResolve = lowerVoidResolveCall(lowerer, expr, callee, loc);
+  if (voidResolve !== null) return voidResolve;
   const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
   // A callee the program holds at `any`, or at `unknown` behind a `typeof`
   // test, whose function type the lowering knows: an untyped argument
