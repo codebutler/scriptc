@@ -2825,6 +2825,8 @@ export function lowerObjectLiteral(
       const closure = lowerer.coerceInto(prop, lowerer.lowerLambda(prop), slotT);
       if (!typeEquals(closure.type, slotT)) lowerer.badType(prop, lowerer.typeOf(prop));
       fields.push({ name: slotName, value: closure });
+      if (!orderSegments.some((segment) => segment.kind === "key" && segment.name === name))
+        orderSegments.push({ kind: "key", name, definite: true });
       continue;
     }
     const name = propNameText(lowerer, prop.name!); // key-form-checked above

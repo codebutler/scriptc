@@ -87,6 +87,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
 import {
   keyOrderUntracedDiag,
+  unsupportedDiag,
   type KeyOrderUntracedCause,
   type ScrDiagnostic,
 } from "../../diagnostics/diagnostic.js";
@@ -188,6 +189,7 @@ export class KeyOrderNotes {
   /** Same-shape `{ ...r, k: v }` clones (lowerObjectLiteral's recordClone
    * fast path), which copy the source's own keys too (keepRecordClones). */
   private readonly clones = new Set<IrExpr>();
+  private readonly accessorEnumerations = new Map<string, string>();
   /** Shapes a frontend order surface (keys, values/entries, inspect,
    * index-signature merges) walks. */
   readonly observed = new Set<string>();
@@ -225,12 +227,24 @@ export class KeyOrderNotes {
       this.widths.size,
       this.sourceProbes.size,
       this.clones.size,
+      this.accessorEnumerations.size,
       this.observed.size,
       this.runtimeWrites.size,
       this.changed.size,
       this.keptSourceShapes.size,
       this.warnings.length,
     ];
+  }
+
+  /** A static accessor walk whose closed key order must be proved after lowering. */
+  accessorEnumeration(node: IrExpr, shapeId: string): IrExpr {
+    if (node.kind !== "call") throw new InternalCompilerError("accessor walk must call its helper");
+    this.accessorEnumerations.set(node.callee, shapeId);
+    return node;
+  }
+
+  accessorEnumerationOf(node: IrExpr): string | undefined {
+    return node.kind === "call" ? this.accessorEnumerations.get(node.callee) : undefined;
   }
 
   literal(node: IrExpr, segments: KeyOrderSegment[]): IrExpr {
@@ -647,6 +661,12 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     };
     visit(type, built);
   };
+  const accessorSites = new Map<string, SrcLoc[]>();
+  const accessorEscapes = new Set<string>();
+  const accessorEscapeSeen = new Set<string>();
+  const accessorKeyWrites = new Set<string>();
+  const escapeAccessor = (type: IrType): void =>
+    shapesIn(type, accessorEscapes, accessorEscapeSeen);
   const opaqueShapes = new Set<string>();
   const opaqueSeen = new Set<string>();
   const runtimeShapes = new Set<string>();
@@ -735,6 +755,17 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     inits.set(id, { count: 1, fn: fnName, loop: loopKey(), pos, fresh });
   };
   const visitExpr = (e: IrExpr): void => {
+    const accessor = notes.accessorEnumerationOf(e);
+    if (accessor !== undefined) {
+      const sites = accessorSites.get(accessor) ?? [];
+      sites.push(e.loc);
+      accessorSites.set(accessor, sites);
+    }
+    // Foreign or reflective users can change descriptors or keys outside
+    // the native record-write census. Keep those shapes outside this proof.
+    if (e.kind === "dynFrom") escapeAccessor(e.value.type);
+    if (e.kind === "libCall" || e.kind === "ffiCall" || e.kind === "intrinsic")
+      for (const arg of e.args) escapeAccessor(arg.type);
     const probe = notes.sourceProbeOf(e);
     if (probe !== undefined && currentFn !== null) {
       probeSites.push({ node: e, fn: currentFn });
@@ -887,6 +918,10 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   };
   const visitStmt = (st: IrStmt): void => {
     switch (st.kind) {
+      case "recordKeySet":
+      case "recordKeyDelete":
+        accessorKeyWrites.add(st.shapeId);
+        return;
       case "recordSet":
         if (notes.runtimeWrites.has(st.shapeId) && st.value.kind !== "fieldAbsent") return;
         if (st.value.kind === "fieldAbsent") factsOf(st.shapeId).deleted.add(st.field);
@@ -938,6 +973,76 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   }
   for (const id of runtimeShapes) factsOf(id).runtime = true;
   for (const id of declaredShapes) if (!runtimeShapes.has(id)) factsOf(id).pinned = true;
+
+  // Accessor walks initially cover closed, fixed-key literal records only.
+  // Their data values remain live, but no operation may change their key set
+  // or descriptors. Do not adopt the first checker type's accessorOrder as
+  // evidence: equal record layouts may have different source insertion order.
+  for (const [id, sites] of accessorSites) {
+    const shape = shapes.get(id);
+    const f = facts.get(id);
+    let order: string[] | null = null;
+    let proven =
+      shape !== undefined &&
+      f !== undefined &&
+      f.literals.length > 0 &&
+      !f.pinned &&
+      !f.opaque &&
+      !f.runtime &&
+      !f.clones &&
+      f.copies.length === 0 &&
+      f.absent.size === 0 &&
+      f.deleted.size === 0 &&
+      !accessorEscapes.has(id) &&
+      !accessorKeyWrites.has(id) &&
+      !notes.runtimeWrites.has(id) &&
+      !shape.tuple &&
+      shape.indexValue === undefined &&
+      shape.fields.every((field) => field.optional !== true) &&
+      !f.writes.some((write) => write.field.startsWith("%"));
+    if (proven && shape !== undefined && f !== undefined) {
+      const names = new Set(
+        shape.fields.map((field) =>
+          field.name.startsWith("%get:") || field.name.startsWith("%set:")
+            ? field.name.slice(5)
+            : field.name,
+        ),
+      );
+      for (const segments of f.literals) {
+        const keys: string[] = [];
+        for (const segment of segments) {
+          if (segment.kind !== "key" || !segment.definite) {
+            proven = false;
+            break;
+          }
+          if (!keys.includes(segment.name)) keys.push(segment.name);
+        }
+        if (!proven || keys.length !== names.size || keys.some((key) => !names.has(key))) {
+          proven = false;
+          break;
+        }
+        const normalized = [
+          ...keys.filter(isArrayIndex).sort((a, b) => Number(a) - Number(b)),
+          ...keys.filter((key) => !isArrayIndex(key)),
+        ];
+        if (order !== null && order.some((key, index) => key !== normalized[index])) {
+          proven = false;
+          break;
+        }
+        order = normalized;
+      }
+    }
+    if (proven && order !== null && shape !== undefined) shape.accessorOrder = order;
+    else
+      for (const loc of sites)
+        lowerer.pushDiag(
+          unsupportedDiag(
+            "SC1090",
+            loc,
+            "accessor enumeration without one proven closed literal key order (dynamic exposure, optional keys, copies and key-changing writes retain the refusal)",
+          ),
+        );
+  }
 
   // ── declared spread merges ──────────────────────────────────────────
   // `{ ...a, ...b }` into one declared shape writes the shape's slots in

@@ -1,3 +1,4 @@
+import { lowerAccessorEnumeration } from "./accessor-enumeration.js";
 import {
   privateInstanceMemberName,
   privateInstanceMethod,
@@ -11325,17 +11326,13 @@ function lowerObjectStaticCall(
   if (!shape || shape.tuple) return null; // tuple → the fence
   // Accessor-carrying shapes: Node's answer includes the accessor NAMES
   // (own enumerable properties) and — for values/entries — the getter
-  // RESULTS, invoked in key order. The static field walk models neither
-  // (accessor slots live outside declaredOrder), so the surface fences.
+  // RESULTS, invoked in key order. Their dedicated walk requires a closed
+  // literal-order proof and reads each property live at its turn.
   fencePerfEntryKeyWalk(lowerer, argIr, call, `Object.${member}`);
   fenceX509KeyWalk(lowerer, argIr, call, `Object.${member}`);
-  if (shapeHasAccessorSlots(shape)) {
-    lowerer.unsupported(
-      "SC1090",
-      call,
-      `Object.${member} over a shape carrying get/set accessor properties (Node lists the accessor names${member === "keys" ? "" : " and invokes the getters"} — the static key walk cannot; read the properties explicitly)`,
-    );
-  }
+  if (shapeHasAccessorSlots(shape))
+    return lowerAccessorEnumeration(lowerer, call, member, argIr, shape);
+
   // unknown[] uses the checked-dynamic array representation. Enumerate
   // a live view of the record so values retain their identities and the
 
