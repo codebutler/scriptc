@@ -44,11 +44,6 @@ for (const [name, source] of [
 
 for (const [name, source, code] of [
   [
-    "joined callback result assignment",
-    `type Handler=((x:number)=>number)|((x:number)=>void);function call(h:Handler|null){return h?.(1);}console.log(call((x:number)=>x));`,
-    "SC2003",
-  ],
-  [
     "different parameter ABI",
     `type Handler=((x:number)=>number)|((x:number|undefined)=>string);function call(h:Handler|null){return h?.(1);}function value(x:number):number{return x;}console.log(call(value));`,
     "SC2001",

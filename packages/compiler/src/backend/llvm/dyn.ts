@@ -8051,7 +8051,9 @@ export class LlDyn {
       const arr = B.slot();
       B.entryAllocas.push(`${arr} = alloca [${t.params.length} x ptr]`);
       t.params.forEach((p, i) => {
-        const v = this.toDynExpr(B, p, `%a${i}`);
+        // A typed caller lends the same record or array to the checked
+        // callable. Snapshot boxing would hide mutations from that caller.
+        const v = this.liveReadToDyn(B, p, `%a${i}`);
         argVals.push(v);
         const slotp = B.tmp();
         B.line(

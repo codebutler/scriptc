@@ -18137,6 +18137,45 @@ export class Lowerer {
           }
         }
       }
+      // A nullable union of matching callable signatures can keep a
+      // broader result through its unique void view. Use a checked view:
+      // a native void adapter would discard the source result before a
+      // checked union call could recover the original callable.
+      if (expr.type.kind === "func" && expr.type.rest !== true) {
+        const from = expr.type;
+        const arms = this.unions.get(expected.unionId)?.arms ?? [];
+        const functions = arms.filter((arm) => arm.kind === "func");
+        const voidViews = functions.filter((arm) => arm.ret.kind === "void");
+        const view = voidViews.length === 1 ? voidViews[0] : undefined;
+        const shape = (id: string) => this.shapes.get(id);
+        const union = (id: string) => this.unions.get(id);
+        if (
+          view &&
+          functions.length > 1 &&
+          arms.some(isUnitType) &&
+          from.argumentsAll !== true &&
+          from.argumentsPresence !== true &&
+          arms.every(
+            (arm) =>
+              isUnitType(arm) ||
+              (arm.kind === "func" && typeEquals({ ...arm, ret: VOID }, { ...from, ret: VOID })),
+          ) &&
+          canBoxFuncIntoDyn(from, shape, union) &&
+          canAdaptDynFuncTo(view, shape, union)
+        ) {
+          const boxed = this.coerceToExpected(expr, DYN);
+          const checked = this.coerceToExpected(boxed, view);
+          if (boxed.type.kind === "dyn" && typeEquals(checked.type, view))
+            return {
+              kind: "unionWrap",
+              unionId: expected.unionId,
+              tag: arms.indexOf(view),
+              value: checked,
+              type: expected,
+              loc: expr.loc,
+            };
+        }
+      }
       // A width-coercible value against a union: coerce into the SINGLE
       // width-liftable arm, then wrap like any arm value (widthLiftPlan's
       // liftWrap — several candidate arms are ambiguous and decline).
