@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/mapped-guarded-member.ts"
+ ],
+ "diags": []
+}

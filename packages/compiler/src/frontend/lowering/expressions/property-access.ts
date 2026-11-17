@@ -5815,12 +5815,25 @@ function checkedDynamicValue(expr: IrExpr): IrExpr | null {
  * `T & Record<"k", unknown>`). Its stored layout is whatever the call site
  * instantiated it with, and the CONSTRAINT's members are not necessarily
  * stored there. */
-function typeParameterReceiver(t: ts.Type): boolean {
+function typeParameterReceiver(t: ts.Type, seen = new Set<ts.Type>()): boolean {
+  if (seen.has(t)) return false;
+  seen.add(t);
   try {
     if ((t.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
+    // Mapped aliases keep their dependency symbolic too: a guard over
+    // Partial<State[K]> can add a key absent from K's instantiated layout.
+    if (t.getAliasTypeArguments().some((arg) => typeParameterReceiver(arg, seen))) return true;
+    if (t.isIndexedAccessType()) {
+      const object = t.getObjectType(),
+        index = t.getIndexType();
+      return (
+        (object !== undefined && typeParameterReceiver(object, seen)) ||
+        (index !== undefined && typeParameterReceiver(index, seen))
+      );
+    }
     return (
       (t.flags & ts.TypeFlags.Intersection) !== 0 &&
-      ts.constituentTypes(t).some((part) => (part.flags & ts.TypeFlags.TypeParameter) !== 0)
+      ts.constituentTypes(t).some((part) => typeParameterReceiver(part, seen))
     );
   } catch (e) {
     if (ts.isUnreadableConstituentsPanic(e)) return false;
