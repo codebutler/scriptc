@@ -5999,7 +5999,7 @@ export function genericClassInstanceType(
     .getTypeArguments(ref as ts.TypeReference)
     .slice(0, gci.typeParams.length);
   const mapped: IrType[] = [];
-  const tsArgs: ts.Type[] = [];
+  const tsArgs: (ts.Type | undefined)[] = [];
   if (args.length === gci.typeParams.length) {
     for (const a of args) {
       tsArgs.push(lowerer.typeParamTsResolver(a) ?? a);
@@ -6038,7 +6038,9 @@ export function genericClassInstanceType(
       if (!b) return null;
       mapped.push(b);
       const bound = lowerer.typeParamTsBindings?.get(tp);
-      if (bound) tsArgs.push(bound);
+      // Keep the declaration position even when this parameter needs no
+      // checker binding: later sensitive parameters still key their own slot.
+      tsArgs.push(bound);
     }
   }
   // A type parameter that a conditional type in the class depends on
@@ -6050,7 +6052,7 @@ export function genericClassInstanceType(
   // the key does not carry.
   gci.literalSensitive ??= literalSensitiveTypeParams(lowerer, gci);
   const sensitive = (i: number): boolean =>
-    tsArgs.length === gci.typeParams.length && gci.literalSensitive!.has(gci.typeParams[i]!);
+    tsArgs[i] !== undefined && gci.literalSensitive!.has(gci.typeParams[i]!);
   const checkerKey = gci.typeParams
     .map((_, i) => (sensitive(i) ? `#${tsArgs[i]!.id}` : "*"))
     .join(",");
