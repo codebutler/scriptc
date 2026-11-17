@@ -304,7 +304,7 @@ import {
 } from "./lower-classes.js";
 import { checkRefusedMemberUse } from "./class-member-refusals.js";
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
-import { checkedClassAssertion } from "./class-assertions.js";
+import { checkedClassAssertion, checkedClassUnionAssertion } from "./class-assertions.js";
 import { lowerInstanceConstructorStaticCall } from "./class-instance-constructor.js";
 import {
   emitOverrideAtOrAbove,
@@ -7189,6 +7189,13 @@ export function reconcileOverloadReturn(
       narrowed.type.kind === "object"
     ) {
       call = checkedClassAssertion(lowerer, call, narrowed.type, call.loc) ?? narrowed;
+    } else if (narrowed === call) {
+      // Optional chaining gives a fluent call a nullable descendant result.
+      // Check that projection inside the guarded body before wrapping it.
+      const target = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (target?.kind === "union") {
+        call = checkedClassUnionAssertion(lowerer, call, target, call.loc) ?? call;
+      }
     } else {
       call = narrowed;
     }
