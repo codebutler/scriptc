@@ -19100,6 +19100,20 @@ export class Lowerer {
       }
       asserted = asserted.expression;
     }
+    // A captured indexed read can keep its full storage union after an
+    // instanceof guard. Extract the checked class reference before testing
+    // key compatibility; no record copy or callback adapter is involved.
+    if (value.type.kind === "union" && expected.kind === "object" && value.kind !== "dynCheck") {
+      const site = this.mapTypeOf(this.typeOf(node));
+      if (
+        site &&
+        (site.kind === "object" || site.kind === "union") &&
+        identityPreservingWidening(this, site, expected)
+      ) {
+        const view = checkedClassAssertion(this, value, expected, value.loc);
+        if (view) return view;
+      }
+    }
     // A Node island's function in its typed view is that one function: the
     // view adopts the function's identity, whatever signature it is viewed
     // through, so the key is the view at the collection's own key type.
