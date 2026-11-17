@@ -2462,16 +2462,37 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     }
     const type: IrType = { kind: "classval", className: info.def.name };
     const local = lowerer.declareLocal(stmt.name, stmt.name.text, type, true);
-    // Static members of a function-local class run while the class value is
-    // built and may read the class by name: the class value assigns the
-    // binding before them.
-    if (info.localClass && (info.runtimeStatics || info.runtimePrototypeMembers))
-      return [
-        { kind: "varDecl", localId: local.id, init: null, loc: locOf(stmt) },
-        { kind: "exprStmt", expr: lowerer.lowerClassExpression(stmt, local), loc: locOf(stmt) },
-      ];
-    const init = lowerer.lowerClassExpression(stmt);
-    return { kind: "varDecl", localId: local.id, init, loc: locOf(stmt) };
+    // Lowering a class method can hoist a later function into this statement
+    // list. Allocate the binding before those closures capture its box;
+    // initialize its value only at the class statement's original position.
+    const entry = lowerer.activeStmtLists.at(-1);
+    const declaration: IrStmt = {
+      kind: "varDecl",
+      localId: local.id,
+      init: null,
+      loc: locOf(stmt),
+    };
+    const prefix = entry?.ctx === lowerer.ctx && entry.stmts[entry.index] === stmt;
+    if (prefix) entry.out.push(declaration);
+    try {
+      // Static members may read the class by name: lowerClassExpression assigns
+      // this same binding before evaluating those members.
+      const result: IrStmt =
+        info.localClass && (info.runtimeStatics || info.runtimePrototypeMembers)
+          ? { kind: "exprStmt", expr: lowerer.lowerClassExpression(stmt, local), loc: locOf(stmt) }
+          : {
+              kind: "assign",
+              localId: local.id,
+              value: lowerer.lowerClassExpression(stmt),
+              loc: locOf(stmt),
+            };
+      return prefix ? result : [declaration, result];
+    } catch (error) {
+      // A failed speculative attempt must not lose its existing typed retry
+      // merely because we reserved storage. Keep any real hoisted output.
+      if (prefix && entry.out.at(-1) === declaration) entry.out.pop();
+      throw error;
+    }
   }
   if (ts.isVariableStatement(stmt)) {
     // `declare const` — ambient: no storage, no init (collectGlobals

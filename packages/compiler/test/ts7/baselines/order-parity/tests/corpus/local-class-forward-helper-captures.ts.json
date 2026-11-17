@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/local-class-forward-helper-captures.ts"
+ ],
+ "diags": []
+}
