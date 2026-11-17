@@ -658,7 +658,12 @@ import {
   returnsDeclaredUndefined,
   widensReducedRecords,
 } from "./function-returns.js";
-import { lowerCall, lowerPromiseMethodCall, lowerFilterNarrowCall } from "./lower-calls.js";
+import {
+  lowerCall,
+  lowerPromiseMethodCall,
+  lowerFilterNarrowCall,
+  reconcileOverloadReturn,
+} from "./lower-calls.js";
 import { lowerFfiCall, validateFfiImports } from "./native-ffi.js";
 import {
   isTopLevelFnSymbol,
@@ -23085,6 +23090,10 @@ export class Lowerer {
     access: ts.PropertyAccessExpression,
   ): IrExpr | null {
     return lowerObjectMethodCall(this, call, access);
+  }
+
+  reconcileCallReturn(call: ts.CallExpression, value: IrExpr): IrExpr {
+    return reconcileOverloadReturn(this, call, value);
   }
 
   lowerSuperMethodCall(call: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr {

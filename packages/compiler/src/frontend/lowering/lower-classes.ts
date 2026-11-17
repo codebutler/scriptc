@@ -11863,12 +11863,22 @@ export function lowerSuperMethodCall(
         ? reflectClassPrototype(lowerer, cls.base, loc, classValueRef(lowerer, cls.base, access))
         : classPrototypeData(lowerer, cls.base, loc);
     if (declared || prototype) {
+      const receiverLocal = lowerer.declareHiddenLocal("%superReceiver", DYN);
+      const receiver = varRef(receiverLocal.id, DYN, loc);
+      const calleeLocal = lowerer.declareHiddenLocal("%superCallee", DYN);
       const callee: IrExpr = declared
         ? lowerer.coerceToExpected(declared, DYN)
         : {
-            kind: "dynKeyGet",
-            value: prototype!,
-            key: { kind: "strLit", value: memberName, type: STRING, loc },
+            kind: "libCall",
+            fn: "dyn.reflectGet",
+            args: [
+              prototype!,
+              lowerer.coerceToExpected(
+                { kind: "strLit", value: memberName, type: STRING, loc },
+                DYN,
+              ),
+              receiver,
+            ],
             type: DYN,
             loc,
           };
@@ -11882,15 +11892,46 @@ export function lowerSuperMethodCall(
       });
       const value: IrExpr = {
         kind: "dynCall",
-        callee,
-        receiver: lowerer.coerceToExpected(thisRef, DYN),
+        callee: varRef(calleeLocal.id, DYN, loc),
+        receiver,
         calleeName: ts.getTextOfNode(access),
         args,
         ...(spreads.length > 0 ? { spreads } : {}),
         type: DYN,
         loc,
       };
-      return found.sig.ret.kind === "void" ? value : lowerer.coerceToExpected(value, found.sig.ret);
+      const result =
+        found.sig.ret.kind === "void"
+          ? value
+          : lowerer.reconcileCallReturn(call, lowerer.coerceToExpected(value, found.sig.ret));
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: receiverLocal.id,
+            init: lowerer.coerceToExpected(thisRef, DYN),
+            loc,
+          },
+          { kind: "varDecl", localId: calleeLocal.id, init: callee, loc },
+        ],
+        result,
+        type: result.type,
+        loc,
+      };
+    }
+    const expected = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (
+      found.sig.ret.kind === "object" &&
+      expected?.kind === "object" &&
+      !typeEquals(found.sig.ret, expected) &&
+      lowerer.isSubclassOf(expected.className, found.sig.ret.className)
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "a specialized super-method result whose observed base prototype cannot be represented",
+      );
     }
   }
   if (found.declarer.builtinError) {
@@ -11911,22 +11952,22 @@ export function lowerSuperMethodCall(
   const superAdapted = found.declarer.returnAdapters?.get(memberName);
   if (superAdapted && superAdapted.params.length !== found.sig.params.length) {
     const ownArgs = lowerer.completeArgs(call.arguments.nodes, superAdapted.params, loc, call);
-    return {
+    return lowerer.reconcileCallReturn(call, {
       kind: "call",
       callee: `%${found.declarer.def.name}.${memberName}$own`,
       args: [lowerer.upcastTo(thisRef, found.declarer.def.name), ...ownArgs],
       type: superAdapted.ret,
       loc,
-    };
+    });
   }
   const args = lowerer.completeArgs(call.arguments.nodes, found.sig.params, loc, call);
-  return {
+  return lowerer.reconcileCallReturn(call, {
     kind: "call",
     callee: `%${found.declarer.def.name}.${memberName}`,
     args: [lowerer.upcastTo(thisRef, found.declarer.def.name), ...args],
     type: found.sig.ret,
     loc,
-  };
+  });
 }
 
 /** A static element key — a string literal, a numeric literal or a

@@ -7160,7 +7160,7 @@ function isSoleAbstractMethod(decl: ts.FunctionDeclaration | ts.MethodDeclaratio
   );
 }
 
-function reconcileOverloadReturn(
+export function reconcileOverloadReturn(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.TaggedTemplateExpression,
   call: IrExpr,
