@@ -1,4 +1,9 @@
 import {
+  privateFieldName,
+  privateInstanceField,
+  privateMemberName,
+} from "./private-field-names.js";
+import {
   isJsIteratorGlobal,
   iteratorPrototypeExpr,
   lowerIteratorNew,
@@ -888,6 +893,8 @@ export interface ClassInfo {
    * the base constructor, before/via super(). */
   fieldOrder: {
     name: string;
+    sourceName?: string;
+    declaration?: ts.PropertyDeclaration;
     type: IrType;
     initializer: ts.Expression | undefined;
     /** A bare JS dyn field defines undefined at its declaration position,
@@ -3417,32 +3424,58 @@ export function collectClassShapeInner(
         }
         lowerer.unsupported("SC1090", memberName, "Error.cause accessors");
       }
-      // #PRIVATE members compile: their names ('#m') are unspellable by
-      // any public identifier, so they ride the ordinary fields/methods
-      // maps collision-free — with the base-chain walks doubling as
-      // LEXICAL resolution because a subclass re-declaring an inherited
-      // private NAME is fenced here (JS would give the two classes
-      // DISTINCT private slots under one spelling; one name, one slot is
-      // the static story — rename one). tsc guarantees every access site
-      // sits inside the declaring class's body, and privates never
-      // enter vtables (no redeclaration below ⇒ overrideBelow is false
-      // ⇒ every call devirtualizes), which is exactly JS's semantics:
-      // lexically bound, no dynamic dispatch, a subclass cannot
-      // override.
+      // Private fields have declaration-qualified storage. Only ordinary
+      // instance-field collisions are supported here; methods/accessors still
+      // dispatch by their lexical spelling and retain their collision fences.
       if (memberName && ts.isPrivateIdentifier(memberName)) {
         const pname = memberName.text;
         if (
           base !== null &&
           (base.fields.has(pname) ||
+            base.def.fields.some((field) => field.name.startsWith(`#private:${pname}.`)) ||
             lowerer.findMethodOn(base, pname) !== null ||
             lowerer.findMethodOn(base, `get:${pname}`) !== null ||
             lowerer.findMethodOn(base, `set:${pname}`) !== null ||
-            findGenericMethodOn(lowerer, base, pname) !== null)
+            findGenericMethodOn(lowerer, base, pname) !== null) &&
+          !(
+            privateInstanceField(memberName) &&
+            !inst &&
+            !familyMode &&
+            !mixin &&
+            !perEvaluationClass(decl) &&
+            (() => {
+              for (let ancestor: ClassInfo | null = base; ancestor; ancestor = ancestor.base) {
+                if (
+                  ancestor.generic ||
+                  ancestor.genericInstance ||
+                  ancestor.localClass ||
+                  ancestor.mixinInstance
+                )
+                  return false;
+                if (
+                  ancestor.decl?.members.nodes.some(
+                    (member) =>
+                      member.name !== undefined &&
+                      ts.isPrivateIdentifier(member.name) &&
+                      member.name.text === pname &&
+                      !ts
+                        .getModifiers(member)
+                        ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword),
+                  )
+                )
+                  return true;
+              }
+              return false;
+            })() &&
+            !lowerer.findMethodOn(base, `get:${pname}`) &&
+            !lowerer.findMethodOn(base, `set:${pname}`) &&
+            !findGenericMethodOn(lowerer, base, pname)
+          )
         ) {
           lowerer.unsupported(
             "SC1090",
             memberName,
-            `redeclaring the private name '${pname}' of a base class (JS gives each class its own distinct '${pname}' slot; these layouts have one slot per name — rename one)`,
+            `redeclaring the private name '${pname}' of a base class (JS gives each class its own distinct '${pname}' slot; this private member collision is outside the supported ordinary instance-field layouts)`,
           );
         }
       }
@@ -3719,12 +3752,13 @@ export function collectClassShapeInner(
           if (symbolKey) symbolFields.set(symbolKey.identity, fieldName);
           continue;
         }
-        // #private fields ride the ordinary field machinery — the '#'
-        // name is unspellable publicly, so the slot never collides, and
-        // enumeration surfaces (inspect) exclude it like Node.
+        // A private instance field has its declaration's storage identity;
+        // source spelling is retained for diagnostics and constructor analysis.
+        // The leading '#' keeps the slot outside public enumeration.
         if (!ts.isIdentifier(member.name) && !ts.isPrivateIdentifier(member.name)) {
           lowerer.unsupported("SC1090", member, "computed field names");
         }
+        const fieldName = privateFieldName(lowerer, member.name);
         // A field initialized with a GENERIC arrow/function expression
         // (`time = async <T>(label, fn) => {...}` — the Output.time
         // idiom): a generic MEMBER, not a field. No closure slot can
@@ -3741,17 +3775,17 @@ export function collectClassShapeInner(
           genericFieldFnNodeOf(member) !== null &&
           isGenericCallableMemberType(lowerer.typeOf(member.name), lowerer.checker)
         ) {
-          if (fields.has(member.name.text)) {
+          if (fields.has(fieldName)) {
             lowerer.unsupported("SC1090", member.name, "redeclaring inherited fields");
           }
-          if (lowerer.findMethodOn(base, member.name.text)) {
+          if (lowerer.findMethodOn(base, fieldName)) {
             lowerer.unsupported("SC1090", member.name, "fields shadowing inherited methods");
           }
-          if (findGenericMethodOn(lowerer, base, member.name.text)) {
+          if (findGenericMethodOn(lowerer, base, fieldName)) {
             lowerer.unsupported(
               "SC1090",
               member.name,
-              `redeclaring the inherited generic member '${member.name.text}' (generic members dispatch statically, so the base's call sites could never reach this redeclaration)`,
+              `redeclaring the inherited generic member '${fieldName}' (generic members dispatch statically, so the base's call sites could never reach this redeclaration)`,
             );
           }
           collectGenericMemberOrRefuse(member, false);
@@ -3761,11 +3795,11 @@ export function collectClassShapeInner(
         // the two dispatch worlds (static per-instantiation calls would
         // never see the field's value) — the method-vs-generic mixing
         // fence, field form.
-        if (findGenericMethodOn(lowerer, base, member.name.text)) {
+        if (findGenericMethodOn(lowerer, base, fieldName)) {
           lowerer.unsupported(
             "SC1090",
             member.name,
-            `fields shadowing the inherited generic member '${member.name.text}' (generic members dispatch statically and would never reach this field's value)`,
+            `fields shadowing the inherited generic member '${fieldName}' (generic members dispatch statically and would never reach this field's value)`,
           );
         }
         // OPTIONAL fields (`a?: string`) are the record-field precedent
@@ -3791,7 +3825,7 @@ export function collectClassShapeInner(
             if (
               !ts.isPropertyAccessExpression(left) ||
               left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
-              left.name.text !== member.name.text
+              privateFieldName(lowerer, left.name) !== fieldName
             )
               continue;
             type =
@@ -3822,9 +3856,9 @@ export function collectClassShapeInner(
           type = lowerer.withUndefinedArmOf(type) ?? DYN;
         }
         if (isJsSourceFile(ts.getSourceFileOfNode(member))) {
-          type = inheritedJsFieldType(lowerer, decl, member.name.text, type);
-          if (base?.fields.get(member.name.text)?.kind === "dyn") type = DYN;
-          if (base && !fields.has(member.name.text) && lowerer.dynConvertible(type)) type = DYN;
+          type = inheritedJsFieldType(lowerer, decl, fieldName, type);
+          if (base?.fields.get(fieldName)?.kind === "dyn") type = DYN;
+          if (base && !fields.has(fieldName) && lowerer.dynConvertible(type)) type = DYN;
         }
         if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
         // Bundled JS declares fields without annotations before assigning
@@ -3845,7 +3879,7 @@ export function collectClassShapeInner(
         }
         const undefinedInitializer =
           type.kind === "dyn" && !member.initializer ? locOf(member) : undefined;
-        if (fields.has(member.name.text)) {
+        if (fields.has(fieldName)) {
           // REDECLARING an inherited field: Node [[Define]]s the OWN
           // property again when THIS class's field initializers run
           // (after super()), so the base slot simply takes the new
@@ -3857,10 +3891,12 @@ export function collectClassShapeInner(
           // reports all answer the overwritten name like Node). A bare
           // JS dyn redeclaration resets the existing slot to undefined.
           // Other bare or type-changing redeclarations keep the fence.
-          const baseType = fields.get(member.name.text)!;
+          const baseType = fields.get(fieldName)!;
           if ((member.initializer || type.kind === "dyn") && typeEquals(type, baseType)) {
             fieldOrder.push({
-              name: member.name.text,
+              name: fieldName,
+              declaration: member,
+              sourceName: member.name.text,
               type,
               initializer: member.initializer,
               ...(undefinedInitializer ? { undefinedInitializer } : {}),
@@ -3876,14 +3912,14 @@ export function collectClassShapeInner(
               : "redeclaring inherited fields without an initializer (Node resets the field to undefined)",
           );
         }
-        if (lowerer.findMethodOn(base, member.name.text)) {
+        if (lowerer.findMethodOn(base, fieldName)) {
           lowerer.unsupported("SC1090", member.name, "fields shadowing inherited methods");
         }
         // A JavaScript field over an inherited accessor has its own
         // lowering; in TypeScript it is a suppressed error.
         if (
           !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
-          redeclaresInheritedMember(lowerer, base, member.name.text, true)
+          redeclaresInheritedMember(lowerer, base, fieldName, true)
         ) {
           lowerer.unsupported("SC1090", member.name, "fields shadowing inherited accessors");
         }
@@ -3911,20 +3947,22 @@ export function collectClassShapeInner(
           if (member.postfixToken?.kind === ts.SyntaxKind.ExclamationToken) {
             unguardedFields.push({
               node: member.name,
-              name: member.name.text,
+              name: fieldName,
               why: `definite assignment assertions on fields not assigned at the constructor's top level ('${member.name.text}!' defers the first assignment past construction — the field would hold garbage, not undefined, until it runs; assign it in the constructor or include undefined in its type)`,
             });
           } else if (!spi) {
             unguardedFields.push({
               node: member.name,
-              name: member.name.text,
+              name: fieldName,
               why: `initializer-less fields not assigned at the constructor's top level when strictPropertyInitialization is off (nothing guarantees '${member.name.text}' is assigned before a read — enable the option, assign it unconditionally at the top of the constructor, or include undefined in its type)`,
             });
           }
         }
-        fields.set(member.name.text, type);
+        fields.set(fieldName, type);
         fieldOrder.push({
-          name: member.name.text,
+          name: fieldName,
+          declaration: member,
+          sourceName: member.name.text,
           type,
           initializer: member.initializer,
           ...(undefinedInitializer ? { undefinedInitializer } : {}),
@@ -4989,6 +5027,7 @@ export function collectClassShapeInner(
         ? { escapes: derived, assigned: null }
         : constructionEscape({
             ctor,
+            privateName: (name) => privateMemberName(lowerer, name),
             fields: fieldOrder.flatMap((f) =>
               paramProps.some((pp) => pp.name === f.name)
                 ? []
@@ -5049,7 +5088,7 @@ export function collectClassShapeInner(
           ts.isPropertyAccessExpression(stmt.expression.left) &&
           stmt.expression.left.expression.kind === ts.SyntaxKind.ThisKeyword
         ) {
-          topAssigned.add(stmt.expression.left.name.text);
+          topAssigned.add(privateFieldName(lowerer, stmt.expression.left.name));
         } else if (
           ts.isExpressionStatement(stmt) &&
           ts.isBinaryExpression(stmt.expression) &&
@@ -5095,10 +5134,41 @@ export function collectClassShapeInner(
       }
     }
 
+    // Brand installation is independent of value assignment and of the
+    // escape analysis's generic-family/mixin shortcut. Concrete mixins and
+    // generic specializations still cannot access an uninstalled private slot.
+    let earlyReads: ConstructionReads | null = null;
+    const constructionFieldReads = (): ConstructionReads => {
+      if (earlyReads === null) {
+        const bases: ts.ClassLikeDeclaration[] = [];
+        for (let b = base; b; b = b.base) {
+          // A specialization's family is a runtime class identity, not a
+          // second execution of that declaration's own constructor.
+          if (b.decl && b.decl !== decl && !bases.includes(b.decl)) bases.push(b.decl);
+        }
+        earlyReads = constructionReads(decl, bases, lowerer.classHierarchy(), (name) =>
+          privateMemberName(lowerer, name),
+        );
+      }
+      return earlyReads;
+    };
+    for (const f of fieldOrder) {
+      if (
+        f.declaration &&
+        ts.isPrivateIdentifier(f.declaration.name) &&
+        constructionFieldReads().beforePrivateInitialization(f.name)
+      )
+        lowerer.unsupported(
+          "SC1090",
+          f.declaration.name,
+          "private instance fields accessed before their declaration is initialized during construction",
+        );
+    }
     if (escape.assigned) {
-      let earlyReads: ConstructionReads | null = null;
+      const readsEarly = (name: string): boolean => constructionFieldReads().early(name);
       for (const f of fieldOrder) {
-        if (f.redeclared || escape.assigned.has(f.name) || deferredInitFields.has(f.name)) continue;
+        if (f.redeclared || escape.assigned.has(f.name)) continue;
+        if (deferredInitFields.has(f.name)) continue;
         if (paramProps.some((pp) => pp.name === f.name)) continue;
         const declared = fields.get(f.name);
         if (declared === undefined) continue;
@@ -5109,14 +5179,11 @@ export function collectClassShapeInner(
         // constructor calls, or the override a derived class gives a method
         // its base constructor calls): their other early exposures keep the
         // plain slot.
-        if (declared.kind !== "object" || lowerer.classes.get(declared.className)?.def.runtime) {
-          if (earlyReads === null) {
-            const bases: ts.ClassLikeDeclaration[] = [];
-            for (let b = base; b; b = b.base) if (b.decl) bases.push(b.decl);
-            earlyReads = constructionReads(decl, bases, lowerer.classHierarchy());
-          }
-          if (!earlyReads.early(f.name)) continue;
-        }
+        if (
+          (declared.kind !== "object" || lowerer.classes.get(declared.className)?.def.runtime) &&
+          !readsEarly(f.name)
+        )
+          continue;
         const armed = deferredSlotType(lowerer, declared);
         if (armed === null) continue;
         fields.set(f.name, armed);
@@ -5128,7 +5195,7 @@ export function collectClassShapeInner(
             (member) =>
               ts.isPropertyDeclaration(member) &&
               (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
-              member.name.text === f.name,
+              privateFieldName(lowerer, member.name) === f.name,
           ) ?? decl,
           undefined,
           lowerer.fmt(declared),
@@ -12465,7 +12532,7 @@ function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType
   ) {
     return null;
   }
-  return lowerer.currentClass?.fields.get(parent.left.name.text) ?? null;
+  return lowerer.currentClass?.fields.get(privateFieldName(lowerer, parent.left.name)) ?? null;
 }
 
 /** An array element read that construction narrows to a class value with a

@@ -34,6 +34,7 @@ export function mentionsReceiver(node: ts.Node): boolean {
  * constructor body, and the inherited part of construction. */
 export interface ConstructionInputs {
   ctor: ts.ConstructorDeclaration | null;
+  privateName?: (name: ts.PrivateIdentifier) => string;
   /** Own declared fields in declaration order, with their initializers. */
   fields: readonly { name: string; initializer: ts.Expression | undefined }[];
   paramProps: readonly string[];
@@ -79,6 +80,8 @@ function containsReturn(node: ts.Node): boolean {
  * while its slot still holds the pre-assignment undefined. */
 export function constructionEscape(inputs: ConstructionInputs): ConstructionEscape {
   const assigned = new Set<string>();
+  const nameOf = (name: ts.MemberName): string =>
+    ts.isPrivateIdentifier(name) ? (inputs.privateName?.(name) ?? name.text) : name.text;
   const stop = (): ConstructionEscape => ({ escapes: true, assigned });
   const thisMember = (node: ts.Node): node is ts.PropertyAccessExpression =>
     ts.isPropertyAccessExpression(node) && node.expression.kind === ts.SyntaxKind.ThisKeyword;
@@ -96,8 +99,8 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
       return !followStatements(body.statements.nodes, depth + 1);
     }
     if (thisMember(node)) {
-      const name = node.name.text;
-      return !(ts.isIdentifier(node.name) && assigned.has(name) && inputs.isField(name));
+      const name = nameOf(node.name);
+      return !(assigned.has(name) && inputs.isField(name));
     }
     let found = false;
     ts.forEachChild(node, (child) => {
@@ -116,12 +119,11 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
         ts.isBinaryExpression(stmt.expression) &&
         stmt.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         thisMember(stmt.expression.left) &&
-        ts.isIdentifier(stmt.expression.left.name) &&
-        inputs.isField(stmt.expression.left.name.text)
+        inputs.isField(nameOf(stmt.expression.left.name))
       ) {
         const right = stmt.expression.right;
         if (mentionsReceiver(right) && exposes(right, depth)) return false;
-        assigned.add(stmt.expression.left.name.text);
+        assigned.add(nameOf(stmt.expression.left.name));
         continue;
       }
       if (ts.isExpressionStatement(stmt) && !exposes(stmt.expression, depth)) continue;

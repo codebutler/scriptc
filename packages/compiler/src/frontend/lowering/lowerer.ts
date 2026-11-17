@@ -1,3 +1,4 @@
+import { privateFieldName } from "./private-field-names.js";
 import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
@@ -16419,8 +16420,9 @@ export class Lowerer {
           : null;
       if (
         (receiver?.kind === "object" &&
-          this.classes.get(receiver.className)?.fields.get(node.name.text)?.kind === "dyn") ||
-        checkedThis?.fields.get(node.name.text)?.kind === "dyn"
+          this.classes.get(receiver.className)?.fields.get(privateFieldName(this, node.name))
+            ?.kind === "dyn") ||
+        checkedThis?.fields.get(privateFieldName(this, node.name))?.kind === "dyn"
       ) {
         return this.checker.getUnknownType();
       }
@@ -16649,7 +16651,9 @@ export class Lowerer {
             ? this.shapes.get(receiverIr.shapeId)?.fields.find((f) => f.name === node.name.text)
                 ?.type
             : receiverIr.kind === "object"
-              ? this.classes.get(receiverIr.className)?.fields.get(node.name.text)
+              ? this.classes
+                  .get(receiverIr.className)
+                  ?.fields.get(privateFieldName(this, node.name))
               : undefined;
         if (receiverIr.kind === "record" || receiverIr.kind === "object") {
           const memberIr = this.mapTypeOf(member);

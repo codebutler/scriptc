@@ -1,3 +1,4 @@
+import { privateFieldName } from "../private-field-names.js";
 /* Type narrowing of lowered values, conditional and as-expressions, and runtime-optional receiver reads. */
 import { heritageArmReaches } from "./relational.js";
 import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "../coercions/console-records.js";
@@ -688,7 +689,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       if (receiver?.kind === "object") {
         const info = lowerer.classes.get(receiver.className);
         if (
-          info?.fields.get(node.name.text)?.kind === "dyn" ||
+          info?.fields.get(privateFieldName(lowerer, node.name))?.kind === "dyn" ||
           lowerer.findMethodOn(info ?? null, `get:${node.name.text}`)?.sig.ret.kind === "dyn"
         )
           return expr;
@@ -712,7 +713,9 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
           const owner = lowerer.mapTypeOf(lowerer.typeOf(receiver.expression));
           if (
             owner?.kind === "object" &&
-            lowerer.classes.get(owner.className)?.fields.get(receiver.name.text)?.kind === "dyn"
+            lowerer.classes
+              .get(owner.className)
+              ?.fields.get(privateFieldName(lowerer, receiver.name))?.kind === "dyn"
           )
             return expr;
         }

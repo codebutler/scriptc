@@ -1,3 +1,4 @@
+import { privateFieldName, privateInstanceField } from "../private-field-names.js";
 import { callableMemberFieldTarget } from "../callable-properties.js";
 import { reprototypedGuard } from "../reprototyped-reads.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
@@ -589,7 +590,7 @@ export function lowerPropertyAccessExpr(
   // one: the field of the brand-checked receiver (checkedPrivateValue).
   if (ts.isPrivateIdentifier(expr.name)) {
     const owner = privateNameClass(lowerer, expr.name);
-    const field = owner?.fields.get(expr.name.text);
+    const field = owner?.fields.get(privateFieldName(lowerer, expr.name));
     const probed = field ? tryLowerExpression(lowerer, expr.expression) : null;
     if (owner && field && probed && checkedDynamicValue(probed)) {
       const value = checkedDynamicValue(lowerer.lowerExpr(expr.expression))!;
@@ -597,11 +598,28 @@ export function lowerPropertyAccessExpr(
         kind: "fieldGet",
         obj: checkedPrivateValue(lowerer, owner, expr, value, loc),
         className: owner.def.name,
-        field: expr.name.text,
+        field: privateFieldName(lowerer, expr.name),
         type: field,
         loc,
       };
     }
+  }
+  // Private fields are never public dynamic properties. Once native and
+  // checked-brand receiver resolution declines, retain a precise refusal;
+  // generic/opaque receivers must not expose a slot's internal string key.
+  if (privateInstanceField(expr.name, lowerer)) {
+    const target = lowerer.fieldTarget(expr);
+    if (target?.container === "class") {
+      const read = lowerer.fieldGetExpr(target, loc, expr);
+      return runtimeOptionalClassField(lowerer, read, expr)
+        ? read
+        : lowerer.maybeNarrow(read, expr);
+    }
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      "private instance field reads without a represented native or checked-brand receiver",
+    );
   }
   // Node's navigator is never nullish, so `navigator?.userAgent` (zod's
   // Cloudflare probe) folds like `navigator.userAgent`.
@@ -2144,13 +2162,15 @@ export function lowerPropertyAccessExpr(
   // an absent element takes the normal checked-value TypeError.
   const nativeReceiver = lowerer.stripUndefinedArm(recvLowered.type);
   if (ts.isPrivateIdentifier(expr.name) && recvLowered.type.kind === "object") {
-    const field = lowerer.classes.get(recvLowered.type.className)?.fields.get(expr.name.text);
+    const field = lowerer.classes
+      .get(recvLowered.type.className)
+      ?.fields.get(privateFieldName(lowerer, expr.name));
     if (field)
       return {
         kind: "fieldGet",
         obj: recvLowered,
         className: recvLowered.type.className,
-        field: expr.name.text,
+        field: privateFieldName(lowerer, expr.name),
         type: field,
         loc,
       };
@@ -5668,6 +5688,11 @@ export function classFieldTarget(
     lowerer.flushDeferredClass(receiverType.className);
   if (!info) return null;
   const fieldType = info.fields.get(fieldName);
+  const parent = receiverNode.parent;
+  const sourceName =
+    ts.isPropertyAccessExpression(parent) && parent.expression === receiverNode
+      ? parent.name.text
+      : fieldName;
   const lowerObjectReceiver = (): IrExpr => {
     let obj = represented;
     if (obj.type.kind === "union") {
@@ -5677,7 +5702,7 @@ export function classFieldTarget(
         receiverNode,
         obj,
         receiverType,
-        fieldName,
+        sourceName,
       );
       if (present) return present;
       const helper = lowerer.narrowedArmHelper(obj.type.unionId, receiverType, locOf(receiverNode));
@@ -5899,7 +5924,7 @@ export function fieldTarget(
   if (isCjsExportsIdentifier(lowerer, access.expression)) return null;
   if (lowerer.chainBlocked(access)) return null;
   if (
-    access.name.text === "stackTraceLimit" &&
+    privateFieldName(lowerer, access.name) === "stackTraceLimit" &&
     lowerer.isStdlibGlobal(access.expression, "Error")
   ) {
     return {
@@ -5922,14 +5947,19 @@ export function fieldTarget(
         kind: "object",
         className: owner.info.def.name,
       };
-      return classFieldTarget(lowerer, access.expression, ownerType, access.name.text);
+      return classFieldTarget(
+        lowerer,
+        access.expression,
+        ownerType,
+        privateFieldName(lowerer, access.name),
+      );
     }
   }
   // `value.#x = v` on a checked-dynamic value: the field of the
   // brand-checked receiver (checkedPrivateValue).
   if (ts.isPrivateIdentifier(access.name)) {
     const owner = privateNameClass(lowerer, access.name);
-    const probed = owner?.fields.has(access.name.text)
+    const probed = owner?.fields.has(privateFieldName(lowerer, access.name))
       ? tryLowerExpression(lowerer, access.expression)
       : null;
     if (owner && probed && checkedDynamicValue(probed)) {
@@ -5944,7 +5974,7 @@ export function fieldTarget(
         lowerer,
         access.expression,
         { kind: "object", className: owner.def.name },
-        access.name.text,
+        privateFieldName(lowerer, access.name),
         receiver,
       );
     }
@@ -5953,7 +5983,7 @@ export function fieldTarget(
   // type maps to its array): the class object's field.
   {
     const owner = arrayClassMemberOwner(lowerer, access);
-    const name = access.name.text;
+    const name = privateFieldName(lowerer, access.name);
     if (
       owner !== null &&
       (owner.fields.has(name) ||
@@ -5976,7 +6006,7 @@ export function fieldTarget(
         lowerer,
         access.expression,
         { kind: "object", className: owner.def.name },
-        access.name.text,
+        privateFieldName(lowerer, access.name),
         receiver,
       );
     }
@@ -5998,8 +6028,20 @@ export function fieldTarget(
         ? stored
         : narrowed;
   if (receiverIr?.kind === "object") {
-    const target = classFieldTarget(lowerer, access.expression, receiverIr, access.name.text);
+    const target = classFieldTarget(
+      lowerer,
+      access.expression,
+      receiverIr,
+      privateFieldName(lowerer, access.name),
+    );
     if (target) return target;
+    if (privateInstanceField(access.name, lowerer))
+      lowerer.unsupported(
+        "SC1090",
+        access,
+        "private instance field writes without a represented native or checked-brand receiver",
+      );
+    if (ts.isPrivateIdentifier(access.name)) return null;
     // Abstract properties declare no base storage. Resolve the concrete
     // instance's live field or accessor through the existing class bridge;
     // inventing a shared field offset would misread subclass layouts.
@@ -6007,20 +6049,35 @@ export function fieldTarget(
       return {
         container: "dynamic",
         obj: lowerer.coerceInto(access.expression, lowerer.lowerExpr(access.expression), DYN),
-        field: access.name.text,
+        field: privateFieldName(lowerer, access.name),
         fieldType: lowerer.irTypeOf(access),
       };
     }
     return null;
   }
   if (receiverIr?.kind === "union" && hasClassPayload(lowerer, receiverIr)) {
-    return representedClassFieldTarget(
+    const target = representedClassFieldTarget(
       lowerer,
       access.expression,
-      access.name.text,
+      privateFieldName(lowerer, access.name),
       lowerer.lowerExpr(access.expression),
     );
+    if (target) return target;
+    if (privateInstanceField(access.name, lowerer))
+      lowerer.unsupported(
+        "SC1090",
+        access,
+        "private instance fields on a union without one represented native receiver",
+      );
+    return null;
   }
+  if (privateInstanceField(access.name, lowerer))
+    lowerer.unsupported(
+      "SC1090",
+      access,
+      "private instance fields without a represented native or checked-brand receiver",
+    );
+  if (ts.isPrivateIdentifier(access.name)) return null;
   // `(p as any).k = v` on a record: `any` has no static layout, and Node
   // erases the assertion, so the write reaches the object `p` names. A
   // member the record's own layout declares is that slot (the value

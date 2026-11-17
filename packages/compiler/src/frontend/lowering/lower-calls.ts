@@ -1,3 +1,4 @@
+import { privateFieldName, privateInstanceField } from "./private-field-names.js";
 import { lowerVoidResolveCall } from "./promise-resolution.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
@@ -251,6 +252,7 @@ import {
 import { lowerPrototypeReflectionCall, lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
+  type FieldTarget,
   nullishBranches,
   v8CalleeText,
   lowerPromiseAllTupleCall,
@@ -1026,6 +1028,24 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerCheckedPrivateMethodCall(lowerer, expr, expr.expression) ??
       lowerCheckedPrivateFieldCall(lowerer, expr, expr.expression);
     if (privateCall) return privateCall;
+    if (privateInstanceField(expr.expression.name, lowerer)) {
+      const target = lowerer.fieldTarget(expr.expression);
+      if (target?.container === "class") {
+        const fieldCall = lowerFieldValueCall(
+          lowerer,
+          expr,
+          expr.expression,
+          target.fieldType,
+          target,
+        );
+        if (fieldCall) return fieldCall;
+      }
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "private instance field calls without a represented native or checked-brand receiver",
+      );
+    }
   }
 
   const consoleMember = lowerer.consoleCallMember(expr);
@@ -12984,6 +13004,7 @@ function lowerFieldValueCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
   fieldType: IrType,
+  preparedTarget?: FieldTarget,
 ): IrExpr | null {
   const callableType =
     fieldType.kind === "func"
@@ -13008,7 +13029,7 @@ function lowerFieldValueCall(
           })()
         : null;
   if (callableType === null && fieldType.kind !== "dyn") return null;
-  const target = lowerer.fieldTarget(access);
+  const target = preparedTarget ?? lowerer.fieldTarget(access);
   if (!target) return null;
   const loc = locOf(call);
   const receiverLocal = lowerer.declareHiddenLocal("%callReceiver", target.obj.type);
@@ -13266,7 +13287,7 @@ function lowerObjectMethodCallOn(
   };
   const info =
     lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
-  const found = info ? lowerer.findMethodOn(info, access.name.text) : null;
+  const found = info ? lowerer.findMethodOn(info, privateFieldName(lowerer, access.name)) : null;
   // A member the class refused (class-member-refusals.ts): this call is a
   // statically visible use of it.
   if (found) checkRefusedMemberUse(lowerer, found.declarer, access.name.text, access.name);
@@ -13416,7 +13437,7 @@ function lowerObjectMethodCallOn(
   }
   // A field in call position (`this.cb()`): the call of the field's value.
   if (info && !found) {
-    const fieldType = info.fields.get(access.name.text);
+    const fieldType = info.fields.get(privateFieldName(lowerer, access.name));
     if (fieldType) return lowerFieldValueCall(lowerer, call, access, fieldType);
     if (
       isJsSourceFile(ts.getSourceFileOfNode(call)) &&
@@ -14668,7 +14689,7 @@ function lowerCheckedPrivateFieldCall(
 ): IrExpr | null {
   if (!ts.isPrivateIdentifier(access.name) || lowerer.chainBlocked(access, call)) return null;
   const owner = privateNameClass(lowerer, access.name);
-  const fieldType = owner?.fields.get(access.name.text);
+  const fieldType = owner?.fields.get(privateFieldName(lowerer, access.name));
   if (!fieldType) return null;
   const probed = tryLowerExpression(lowerer, access.expression);
   if (!probed || !checkedDynamicOperand(probed)) return null;

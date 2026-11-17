@@ -99,6 +99,9 @@ export interface ConstructionReads {
   /** Whether construction can read the class's field `name` through `this`
    * before the field's assignment. */
   early(name: string): boolean;
+  /** Private access (including writes) before the field declaration has
+   * installed its brand. A bare declaration still installs undefined. */
+  beforePrivateInitialization(name: string): boolean;
 }
 
 /** Whether `node` is a nested function or class with a receiver of its
@@ -161,16 +164,24 @@ function isStatic(member: ts.ClassElement): boolean {
   return ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) ?? false;
 }
 
-function memberNameOf(member: ts.ClassElement): string | null {
+function memberNameOf(
+  member: ts.ClassElement,
+  privateName: (name: ts.PrivateIdentifier) => string,
+): string | null {
   const name = member.name;
   return name !== undefined &&
     (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name))
-    ? name.text
+    ? ts.isPrivateIdentifier(name)
+      ? privateName(name)
+      : name.text
     : null;
 }
 
 /** The field a top-level constructor statement assigns (`this.x = e;`). */
-function assignedFieldOf(statement: ts.Statement): string | null {
+function assignedFieldOf(
+  statement: ts.Statement,
+  privateName: (name: ts.PrivateIdentifier) => string,
+): string | null {
   if (
     !ts.isExpressionStatement(statement) ||
     !ts.isBinaryExpression(statement.expression) ||
@@ -180,8 +191,22 @@ function assignedFieldOf(statement: ts.Statement): string | null {
   const target = statement.expression.left;
   return ts.isPropertyAccessExpression(target) &&
     target.expression.kind === ts.SyntaxKind.ThisKeyword
-    ? target.name.text
+    ? ts.isPrivateIdentifier(target.name)
+      ? privateName(target.name)
+      : target.name.text
     : null;
+}
+
+/** Erased syntax cannot hide a private access to the constructing receiver. */
+function privateReceiver(expression: ts.Expression): ts.Expression {
+  while (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertion(expression) ||
+    ts.isNonNullExpression(expression)
+  )
+    expression = expression.expression;
+  return expression;
 }
 
 /** The fields of `decl` that the construction of an instance of `decl` (or
@@ -193,6 +218,7 @@ export function constructionReads(
   decl: ts.ClassLikeDeclaration,
   bases: readonly ts.ClassLikeDeclaration[],
   hierarchy: ClassHierarchy,
+  privateName: (name: ts.PrivateIdentifier) => string = (name) => name.text,
 ): ConstructionReads {
   // What running `this.name` runs (a method, or a field holding a
   // function, which a call runs with the instance as its receiver) and
@@ -206,7 +232,7 @@ export function constructionReads(
   };
   for (const owner of [decl, ...bases, ...descendantsOf(hierarchy, decl)]) {
     for (const member of owner.members.nodes) {
-      const name = memberNameOf(member);
+      const name = memberNameOf(member, privateName);
       if (name === null || isStatic(member)) continue;
       if (ts.isAccessor(member)) {
         if (member.body) add(accessedByName, name, member.body);
@@ -224,6 +250,7 @@ export function constructionReads(
   // method construction had called by then, and the step of the first
   // computed `this[key]` read, which can name any member.
   const readAt = new Map<string, number>();
+  const privateAccessAt = new Map<string, number>();
   let anyAt = Infinity;
   let step = 0;
   const entered = new Set<ts.Node>();
@@ -246,13 +273,36 @@ export function constructionReads(
     ts.walkPreorder(root, (node) => {
       if (node !== root && bindsReceiver(node)) return "skip";
       if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+        ts.isPrivateIdentifier(node.left)
+      ) {
+        const receiver = privateReceiver(node.right);
+        if (receiver.kind === ts.SyntaxKind.ThisKeyword) {
+          const name = privateName(node.left);
+          if (!privateAccessAt.has(name)) privateAccessAt.set(name, step);
+        }
+      }
+      if (ts.isPropertyAccessExpression(node) && ts.isPrivateIdentifier(node.name)) {
+        const receiver = privateReceiver(node.expression);
+        if (
+          receiver.kind === ts.SyntaxKind.ThisKeyword ||
+          receiver.kind === ts.SyntaxKind.SuperKeyword
+        ) {
+          const name = privateName(node.name);
+          if (!privateAccessAt.has(name)) privateAccessAt.set(name, step);
+        }
+      }
+      if (
         (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) ||
         (node.expression.kind !== ts.SyntaxKind.ThisKeyword &&
           node.expression.kind !== ts.SyntaxKind.SuperKeyword)
       )
         return undefined;
       const name = ts.isPropertyAccessExpression(node)
-        ? node.name.text
+        ? ts.isPrivateIdentifier(node.name)
+          ? privateName(node.name)
+          : node.name.text
         : ts.isStringLiteralLike(node.argumentExpression)
           ? node.argumentExpression.text
           : null;
@@ -276,8 +326,7 @@ export function constructionReads(
     for (const member of owner.members.nodes) {
       if (ts.isConstructorDeclaration(member) && member.body)
         statements = member.body.statements.nodes;
-      else if (ts.isPropertyDeclaration(member) && member.initializer && !isStatic(member))
-        initializers.push(member);
+      else if (ts.isPropertyDeclaration(member) && !isStatic(member)) initializers.push(member);
     }
     return { initializers, statements };
   };
@@ -285,29 +334,38 @@ export function constructionReads(
   // of this class is assigned.
   for (const base of bases) {
     const { initializers, statements } = constructionOf(base);
-    for (const member of initializers) scan(member.initializer!, false);
+    for (const member of initializers) if (member.initializer) scan(member.initializer, false);
     for (const statement of statements) scan(statement, false);
   }
   // Then the class's own initializers in declaration order and its
   // constructor's statements, one step each. A field is assigned at the
   // step of its initializer or of its top-level `this.x = e;` statement.
   const assignedAt = new Map<string, number>();
+  const privateInitializedAt = new Map<string, number>();
   const own = constructionOf(decl);
   for (const member of own.initializers) {
     step++;
-    scan(member.initializer!, false);
-    const name = memberNameOf(member);
-    if (name !== null) assignedAt.set(name, step);
+    if (member.initializer) scan(member.initializer, false);
+    const name = memberNameOf(member, privateName);
+    if (name !== null) {
+      if (member.initializer) assignedAt.set(name, step);
+      if (ts.isPrivateIdentifier(member.name)) privateInitializedAt.set(name, step);
+    }
   }
   for (const statement of own.statements) {
     step++;
     scan(statement, false);
-    const name = assignedFieldOf(statement);
+    const name = assignedFieldOf(statement, privateName);
     if (name !== null && !assignedAt.has(name)) assignedAt.set(name, step);
   }
   return {
+    beforePrivateInitialization: (name) => {
+      const access = privateAccessAt.get(name);
+      const initialized = privateInitializedAt.get(name);
+      return access !== undefined && initialized !== undefined && access <= initialized;
+    },
     early: (name) => {
-      const read = Math.min(anyAt, readAt.get(name) ?? Infinity);
+      const read = Math.min(name.startsWith("#") ? Infinity : anyAt, readAt.get(name) ?? Infinity);
       return read !== Infinity && read <= (assignedAt.get(name) ?? Infinity);
     },
   };
