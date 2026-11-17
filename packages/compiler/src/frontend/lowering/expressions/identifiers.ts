@@ -443,6 +443,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       const callback = requiredLibraryCallbackRead(lowerer, expr, local, loc);
       if (callback) return callback;
+      if (captured) {
+        const callable = immutableCapturedCallableRead(lowerer, expr, local, symbol, loc);
+        if (callable) return callable;
+      }
       if (runtimeOptionalObjectWalkerArg(lowerer, expr)) {
         const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
         if (local.type.kind === "union" && narrowed) {
@@ -1633,4 +1637,50 @@ function closureDynRead(
     type: DYN,
     loc,
   };
+}
+
+/** A captured const can retain its declared nullable storage after a guard.
+ * Only a declared, exact function-or-nullish union is eligible: hidden holes
+ * and mutable captures retain their existing runtime-optional read policy. */
+function immutableCapturedCallableRead(
+  lowerer: Lowerer,
+  expr: ts.Identifier,
+  local: IrLocal,
+  symbol: ts.Symbol | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (
+    !symbol ||
+    local.mutable ||
+    local.type.kind !== "union" ||
+    isJsSourceFile(ts.getSourceFileOfNode(expr))
+  )
+    return null;
+  const declaration = symbol.valueDeclaration;
+  if (
+    !declaration ||
+    !ts.isVariableDeclaration(declaration) ||
+    !ts.isIdentifier(declaration.name) ||
+    !ts.isVariableDeclarationList(declaration.parent) ||
+    (declaration.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  const declared = lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(symbol));
+  if (!declared || !typeEquals(declared, local.type)) return null;
+  const arms = lowerer.unions.get(local.type.unionId)?.arms ?? [];
+  const functions = arms.filter((arm) => arm.kind === "func");
+  const present = functions.length === 1 ? functions[0] : undefined;
+  const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (
+    !present ||
+    !arms.some(isUnitType) ||
+    !arms.every((arm) => arm === present || isUnitType(arm)) ||
+    !narrowed ||
+    !typeEquals(narrowed, present)
+  )
+    return null;
+  const helper = lowerer.narrowedArmHelper(local.type.unionId, present, loc);
+  return helper
+    ? lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), present, loc)
+    : null;
 }
