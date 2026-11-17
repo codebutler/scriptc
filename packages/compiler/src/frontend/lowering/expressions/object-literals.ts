@@ -2595,7 +2595,17 @@ export function lowerObjectLiteral(
       // Index-signature shapes carry runtime-keyed overflow entries the
       // field-by-field desugar cannot enumerate — fenced on either side.
       if (srcShape.indexValue || shape.indexValue) {
-        const fallback = dynSpreadLiteral(lowerer, expr, type);
+        const fallback = dynSpreadLiteral(
+          lowerer,
+          expr,
+          type,
+          false,
+          srcShape.indexValue &&
+            srcShape.fields.length === 0 &&
+            !dynSpreadSource(lowerer, prop.expression)
+            ? prop.expression
+            : undefined,
+        );
         if (fallback) return fallback;
         lowerer.unsupported(
           "SC1090",
@@ -3977,20 +3987,26 @@ const CONDITIONAL_SPREAD_FENCE =
  * copy-then-check a spread of an untyped or runtime-keyed source needs
  * (`{ ...item }` out of a `Record<string, unknown>`). Null when no spread
  * source is of that world or the target shape has no checked extraction:
- * the caller keeps its own refusal. Keys the target does not declare drop
- * (divergence 36/68's spread stance). */
+ * the caller keeps its own refusal. Closed data-record targets retain
+ * undeclared source properties through their checked record view. */
 function dynSpreadLiteral(
   lowerer: Lowerer,
   expr: ts.ObjectLiteralExpression,
   type: IrType,
   conditional = false,
+  indexedSource?: ts.Expression,
+  shallowIndexed = false,
 ): IrExpr | null {
   if (type.kind !== "record") return null;
   // A conditional spread's keys are runtime state too — which arm runs (and
   // whether it contributes any key at all) is decided at runtime, and one
   // contributor per name cannot express a later conditional addressing a
   // name an earlier contributor already wrote.
+  // A lowered call can prove an indexed result even when its checker type
+  // is unmappable (for example Object.fromEntries over inferred any[]).
+  // The witness belongs only to that exact spread; target checks still apply.
   const qualifies = (node: ts.Expression): boolean =>
+    node === indexedSource ||
     dynSpreadSource(lowerer, node) ||
     (conditional && (conditionalSpreadOf(node) !== null || andSpreadOf(lowerer, node) !== null));
   if (
@@ -4009,7 +4025,141 @@ function dynSpreadLiteral(
   // record as its checker context: lower the arms as the dyn values whose
   // own keys the copy reads, not against the record one arm need not
   // complete.
-  return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr, undefined, true), type);
+  const box =
+    indexedSource !== undefined || shallowIndexed ? shallowIndexedSpreadSource : undefined;
+  return lowerer.coerceToExpected(
+    lowerDynObjectLiteral(
+      lowerer,
+      expr,
+      box ? (node, value) => box(lowerer, node, value) : undefined,
+      true,
+    ),
+    type,
+  );
+}
+
+/** Copy a pure indexed source shallowly. Its ordinary dynamic snapshot may
+ * copy nested arrays; spread must retain those values while copying keys. */
+function shallowIndexedSpreadSource(lowerer: Lowerer, node: ts.Expression, value: IrExpr): IrExpr {
+  // boxValue also visits explicit members: those retain the value itself.
+  if (!ts.isSpreadAssignment(node.parent)) return lowerer.coerceToExpected(value, DYN);
+  if (
+    value.type.kind === "union" &&
+    (lowerer.unions.get(value.type.unionId)?.arms ?? []).some(
+      (arm) => arm.kind === "record" && lowerer.shapes.get(arm.shapeId)?.indexValue !== undefined,
+    )
+  )
+    lowerer.unsupported("SC1090", node, "shallow checked spreads of union indexed sources");
+  const shape = value.type.kind === "record" ? lowerer.shapes.get(value.type.shapeId) : undefined;
+  if (shape?.indexValue && (shape.tuple || shape.fields.length > 0))
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      "shallow checked spreads of mixed declared and indexed sources",
+    );
+  if (value.type.kind !== "record" || !shape?.indexValue || shape.tuple || shape.fields.length > 0)
+    return lowerer.coerceToExpected(value, DYN);
+  fenceAccessorSpreadSource(lowerer, node, shape);
+  const loc = locOf(node);
+  const cacheKey = `shallow-index-spread:${value.type.shapeId}`;
+  const existing = lowerer.valueHelpers.get(cacheKey);
+  if (existing) return { kind: "call", callee: existing, args: [value], type: DYN, loc };
+  const helper = keyedHelperName(lowerer, "%spread.indexCopy", cacheKey);
+  const source = { id: "source.0", name: "source", type: value.type, mutable: false };
+  const output = { id: "output.0", name: "output", type: DYN, mutable: false };
+  const keysType = arrayOf(STRING);
+  const keys = { id: "keys.0", name: "keys", type: keysType, mutable: false };
+  const index = { id: "index.0", name: "index", type: F64, mutable: true };
+  const sourceRef = varRef(source.id, value.type, loc);
+  const outputRef = varRef(output.id, DYN, loc);
+  const keysRef = varRef(keys.id, keysType, loc);
+  const indexRef = varRef(index.id, F64, loc);
+  const key: IrExpr = { kind: "arrayGet", arr: keysRef, index: indexRef, type: STRING, loc };
+  const member: IrExpr = {
+    kind: "recordKeyGet",
+    obj: sourceRef,
+    shapeId: value.type.shapeId,
+    key,
+    overflowOnly: true,
+    type: shape.indexValue,
+    loc,
+  };
+  const entry: IrExpr = {
+    kind: "dynObjLit",
+    fields: [{ key, value: lowerer.coerceToExpected(member, DYN) }],
+    type: DYN,
+    loc,
+  };
+  const body: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: output.id,
+      init: { kind: "dynObjLit", fields: [], type: DYN, loc },
+      loc,
+    },
+    {
+      kind: "varDecl",
+      localId: keys.id,
+      init: {
+        kind: "recordOvfKeys",
+        obj: sourceRef,
+        shapeId: value.type.shapeId,
+        type: keysType,
+        loc,
+      },
+      loc,
+    },
+    {
+      kind: "for",
+      init: { kind: "varDecl", localId: index.id, init: numLit(0, loc), loc },
+      cond: {
+        kind: "bin",
+        op: "<",
+        left: indexRef,
+        right: {
+          kind: "arrIntrinsic",
+          method: "length",
+          receiver: keysRef,
+          args: [],
+          type: F64,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      update: {
+        kind: "assign",
+        localId: index.id,
+        value: { kind: "bin", op: "+", left: indexRef, right: numLit(1, loc), type: F64, loc },
+        loc,
+      },
+      body: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.copyDataProperties",
+            args: [outputRef, entry],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    },
+    { kind: "return", value: outputRef, loc },
+  ];
+  lowerer.liftedFns.push({
+    name: helper,
+    params: [{ localId: source.id, name: source.name, type: source.type }],
+    returnType: DYN,
+    locals: [source, output, keys, index],
+    body,
+    loc,
+  });
+  lowerer.valueHelpers.set(cacheKey, helper);
+  return { kind: "call", callee: helper, args: [value], type: DYN, loc };
 }
 
 /** The PURE index-signature record `candidate` names — every key an overflow
@@ -4275,6 +4425,29 @@ function lowerDeclaredSpreadMerge(
         `object spread of runtime-keyed sources onto the required field '${f.name}' (the keys decide presence at runtime — declare the field optional or spell it explicitly)`,
       );
     }
+  }
+  // A concrete indexed value entering an optional field was not supported
+  // by the declared merge helper. Use the checked copy path for this case:
+  // it retains the source object's own keys as well as validating fields.
+  // Keep existing native merge conversions unchanged.
+  const needsCheckedCopy =
+    srcs.every(
+      (source) => !source.arms && (!source.shape?.indexValue || source.shape.fields.length === 0),
+    ) &&
+    srcs.some((source) => {
+      const iv = source.shape?.indexValue;
+      return (
+        iv !== undefined &&
+        iv.kind !== "dyn" &&
+        iv.kind !== "union" &&
+        shape.fields.every(
+          (field) => field.type.kind === "union" && lowerer.armTag(field.type.unionId, iv) >= 0,
+        )
+      );
+    });
+  if (needsCheckedCopy) {
+    const fallback = dynSpreadLiteral(lowerer, expr, type, false, undefined, true);
+    if (fallback) return fallback;
   }
   // Per (source value slot → field) conversion, checked up front so the
   // fence fires at the literal, not inside the interned helper.

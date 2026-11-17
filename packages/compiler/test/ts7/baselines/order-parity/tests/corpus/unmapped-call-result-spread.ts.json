@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/unmapped-call-result-spread.ts"
+ ],
+ "diags": []
+}
