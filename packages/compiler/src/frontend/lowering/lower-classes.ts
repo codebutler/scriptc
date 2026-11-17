@@ -11949,11 +11949,20 @@ export function lowerSuperMethodCall(
       ? reflectedClassMethodValue(lowerer, found.declarer, memberName)
       : null;
   if (dynamicThis || lowerer.prototypeMethodAccesses.has(memberName)) {
-    const prototype = declared
-      ? null
-      : dynamicThis && cls.base.decl
-        ? reflectClassPrototype(lowerer, cls.base, loc, classValueRef(lowerer, cls.base, access))
-        : classPrototypeData(lowerer, cls.base, loc);
+    // A generic specialization inherits its synthetic family in the native
+    // layout, but super reads the source class's base prototype.
+    const prototypeBase = superBaseOf(cls);
+    const prototype =
+      declared || !prototypeBase
+        ? null
+        : dynamicThis && prototypeBase.decl
+          ? reflectClassPrototype(
+              lowerer,
+              prototypeBase,
+              loc,
+              classValueRef(lowerer, prototypeBase, access),
+            )
+          : classPrototypeData(lowerer, prototypeBase, loc);
     if (declared || prototype) {
       const receiverLocal = lowerer.declareHiddenLocal("%superReceiver", DYN);
       const receiver = varRef(receiverLocal.id, DYN, loc);
