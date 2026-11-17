@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/promise-widened-collection-keys.ts"
+ ],
+ "diags": []
+}

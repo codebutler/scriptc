@@ -19095,6 +19095,12 @@ export class Lowerer {
         target.some(
           (to) =>
             typeEquals(from, to) ||
+            // The checked unknown-payload view shares the source promise's
+            // identity cell, including when it is already a collection key.
+            (from.kind === "promise" &&
+              to.kind === "promise" &&
+              to.inner.kind === "dyn" &&
+              this.promisePayloadWidens(from, to)) ||
             (from.kind === "object" &&
               to.kind === "object" &&
               this.isSubclassOf(from.className, to.className)),
