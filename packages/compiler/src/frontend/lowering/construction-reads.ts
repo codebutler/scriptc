@@ -209,6 +209,60 @@ function privateReceiver(expression: ts.Expression): ts.Expression {
   return expression;
 }
 
+/** Direct lexical arrows retained by a fresh private aggregate. Opaque
+ * expressions keep the eager/conservative walk: no factory, spread, accessor
+ * or computed-key evaluation is certified as mere callback storage. */
+function privateLiteralCallbacks(initializer: ts.Expression): ts.ArrowFunction[] | null {
+  const unwrap = (value: ts.Expression): ts.Expression => {
+    while (
+      ts.isParenthesizedExpression(value) ||
+      ts.isAsExpression(value) ||
+      ts.isTypeAssertion(value) ||
+      ts.isNonNullExpression(value) ||
+      ts.isSatisfiesExpression(value)
+    )
+      value = value.expression;
+    return value;
+  };
+  const root = unwrap(initializer);
+  if (!ts.isObjectLiteralExpression(root) && !ts.isArrayLiteralExpression(root)) return null;
+  const callbacks: ts.ArrowFunction[] = [];
+  const collect = (expression: ts.Expression): boolean => {
+    const value = unwrap(expression);
+    if (ts.isArrowFunction(value)) {
+      callbacks.push(value);
+      return true;
+    }
+    if (ts.isObjectLiteralExpression(value)) {
+      for (const property of value.properties.nodes) {
+        if (
+          !ts.isPropertyAssignment(property) ||
+          ts.isComputedPropertyName(property.name) ||
+          !collect(property.initializer)
+        )
+          return false;
+      }
+      return true;
+    }
+    if (ts.isArrayLiteralExpression(value)) {
+      for (const element of value.elements.nodes) {
+        if (ts.isSpreadElement(element) || !collect(element)) return false;
+      }
+      return true;
+    }
+    return (
+      ts.isIdentifier(value) ||
+      ts.isLiteralExpression(value) ||
+      value.kind === ts.SyntaxKind.TrueKeyword ||
+      value.kind === ts.SyntaxKind.FalseKeyword ||
+      value.kind === ts.SyntaxKind.NullKeyword ||
+      value.kind === ts.SyntaxKind.ThisKeyword ||
+      value.kind === ts.SyntaxKind.OmittedExpression
+    );
+  };
+  return collect(root) ? callbacks : null;
+}
+
 /** The fields of `decl` that the construction of an instance of `decl` (or
  * of a class derived from it) can read through `this` before they are
  * assigned. `bases` are `decl`'s base class declarations, nearest first.
@@ -225,6 +279,8 @@ export function constructionReads(
   // what any `this.name` access runs (an accessor).
   const calledByName = new Map<string, ts.Node[]>();
   const accessedByName = new Map<string, ts.Node[]>();
+  const privateLiteralBodies = new Map<string, ts.Node[]>();
+  const retainedArrows = new Set<ts.ArrowFunction>();
   const add = (table: Map<string, ts.Node[]>, name: string, body: ts.Node): void => {
     const list = table.get(name);
     if (list) list.push(body);
@@ -244,6 +300,16 @@ export function constructionReads(
         (ts.isArrowFunction(member.initializer) || ts.isFunctionExpression(member.initializer))
       )
         add(calledByName, name, member.initializer.body);
+      if (
+        ts.isPropertyDeclaration(member) &&
+        ts.isPrivateIdentifier(member.name) &&
+        member.initializer
+      ) {
+        for (const callback of privateLiteralCallbacks(member.initializer) ?? []) {
+          retainedArrows.add(callback);
+          add(privateLiteralBodies, name, callback.body);
+        }
+      }
     }
   }
   // The step of construction at which each member was first read by a
@@ -272,6 +338,7 @@ export function constructionReads(
     if (!called && (ts.isArrowFunction(root) || bindsReceiver(root))) return;
     ts.walkPreorder(root, (node) => {
       if (node !== root && bindsReceiver(node)) return "skip";
+      if (ts.isArrowFunction(node) && retainedArrows.has(node)) return "skip";
       if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
@@ -291,6 +358,10 @@ export function constructionReads(
         ) {
           const name = privateName(node.name);
           if (!privateAccessAt.has(name)) privateAccessAt.set(name, step);
+          // Reading the private aggregate can invoke or publish any of its
+          // callbacks. A plain write only replaces it, without reading the
+          // previous callbacks. Wrapped receivers follow this same path.
+          if (!isPlainWriteTarget(node)) enter(privateLiteralBodies.get(name));
         }
       }
       if (
