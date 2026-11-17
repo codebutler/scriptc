@@ -18762,6 +18762,21 @@ export class Lowerer {
     this.noteUntypedVariadicStore(node, expr, expected);
     this.noteReceiverReadingStore(node, expr, expected);
     let e = this.coerceToExpected(expr, expected, ownArmSite);
+    // A guarded promise can keep its declared response union in storage.
+    // Extract only the exact promise arm proved at this site, then widen
+    // its payload through the existing identity-preserving conversion.
+    if (!typeEquals(e.type, expected) && expected.kind === "promise" && e.type.kind === "union") {
+      const site = this.mapTypeOf(this.typeOf(node));
+      if (
+        site?.kind === "promise" &&
+        this.armTag(e.type.unionId, site) >= 0 &&
+        this.promisePayloadWidens(site, expected)
+      ) {
+        const helper = this.narrowedArmHelper(e.type.unionId, site, e.loc);
+        if (helper)
+          e = this.coerceToExpected(this.checkedNarrowCall(helper, e, site, e.loc), expected);
+      }
+    }
     // Keep storage intact when ordinary widening already accepts it. Only
     // a destination needing a more specific class layout uses the site's
     // refinement and checked extraction.
