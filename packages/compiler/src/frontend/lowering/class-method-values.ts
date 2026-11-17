@@ -1,3 +1,4 @@
+import { privateInstanceMethod, privateMethodName } from "./private-method-names.js";
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
@@ -30,7 +31,7 @@ import { errorToStringMethod } from "./error-methods.js";
 import { methodJsName } from "./function-names.js";
 import { noteFunctionSourceNode } from "./function-source-text.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
-import { perEvaluationPrivateNames } from "./private-brands.js";
+import { checkedPrivateMethodReceiver, perEvaluationPrivateNames } from "./private-brands.js";
 
 /** The name prefix of the helper that checks the receiver a class's method
  * value was called with into the class (`%method.receiver:C`). */
@@ -53,13 +54,59 @@ export function lowerClassMethodValue(
   expr: ts.PropertyAccessExpression,
   info: ClassInfo,
 ): IrExpr | null {
-  const method = expr.name.text;
+  const method = privateMethodName(lowerer, expr.name);
   if (method === "toString" && findMethodOn(lowerer, info, method)?.declarer.builtinError) {
     return errorToStringMethod(lowerer, lowerer.lowerExpr(expr.expression));
   }
   const loc = locOf(expr);
-  const receiver = lowerer.lowerExpr(expr.expression);
   const declared = findMethodOn(lowerer, info, method);
+  const privateMethod = privateInstanceMethod(expr.name);
+  if (privateMethod) {
+    const generic = declared ? null : findGenericMethodOn(lowerer, info, method);
+    const owner = declared?.declarer ?? generic?.declarer;
+    if (!owner) return null;
+    if ((owner.generic || owner.genericInstance) && owner.privateMethodCollisions?.has(method))
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "values of colliding private methods in generic classes (cross-specialization function identity is not supported)",
+      );
+    if (owner.localClass || perEvaluationPrivateNames(owner))
+      lowerer.unsupported("SC1090", expr, "private method values with per-evaluation brands");
+    let receiver = lowerer.lowerExpr(expr.expression);
+    const dynamic =
+      receiver.type.kind === "dyn"
+        ? receiver
+        : receiver.kind === "dynCheck" && receiver.value.type.kind === "dyn"
+          ? receiver.value
+          : null;
+    if (dynamic) {
+      if (owner.generic || owner.genericInstance)
+        lowerer.unsupported("SC1090", expr, "private method values on checked generic receivers");
+      receiver = checkedPrivateMethodReceiver(lowerer, owner, expr.name.text, dynamic, loc);
+    } else if (
+      receiver.type.kind !== "object" ||
+      (receiver.type.className !== owner.def.name &&
+        !lowerer.isSubclassOf(receiver.type.className, owner.def.name))
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "private method values without a represented native or checked-brand receiver",
+      );
+    }
+    const value = methodValue(lowerer, expr, owner);
+    return value
+      ? {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+          result: value,
+          type: value.type,
+          loc,
+        }
+      : null;
+  }
+  const receiver = lowerer.lowerExpr(expr.expression);
   // A JS checker may name a class while the value is held in checked
   // storage. Read its actual property so own replacements and getters
   // participate, and never pass a dynamic value to a native selector. A
@@ -224,11 +271,19 @@ function methodValue(
   info: ClassInfo,
 ): IrExpr | null {
   // A method read as a value in source: a refused member reports here.
-  const declared = findMethodOn(lowerer, info, expr.name.text);
-  if (declared) checkRefusedMemberUse(lowerer, declared.declarer, expr.name.text, expr.name);
-  const generic = declared ? null : findGenericMethodOn(lowerer, info, expr.name.text);
+  const declared = findMethodOn(lowerer, info, privateMethodName(lowerer, expr.name));
+  if (declared)
+    checkRefusedMemberUse(
+      lowerer,
+      declared.declarer,
+      privateMethodName(lowerer, expr.name),
+      expr.name,
+    );
+  const generic = declared
+    ? null
+    : findGenericMethodOn(lowerer, info, privateMethodName(lowerer, expr.name));
   if (generic?.info.refused) reportRefusedMemberUse(lowerer, generic.info.refused, expr.name);
-  return classMethodValue(lowerer, expr, info, expr.name.text, locOf(expr));
+  return classMethodValue(lowerer, expr, info, privateMethodName(lowerer, expr.name), locOf(expr));
 }
 
 export function classMethodValue(

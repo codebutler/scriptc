@@ -1,4 +1,5 @@
-import { privateFieldName, privateInstanceField } from "../private-field-names.js";
+import { privateInstanceMemberName, privateMethodName } from "../private-method-names.js";
+import { privateInstanceField } from "../private-field-names.js";
 import { callableMemberFieldTarget } from "../callable-properties.js";
 import { reprototypedGuard } from "../reprototyped-reads.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
@@ -590,7 +591,7 @@ export function lowerPropertyAccessExpr(
   // one: the field of the brand-checked receiver (checkedPrivateValue).
   if (ts.isPrivateIdentifier(expr.name)) {
     const owner = privateNameClass(lowerer, expr.name);
-    const field = owner?.fields.get(privateFieldName(lowerer, expr.name));
+    const field = owner?.fields.get(privateInstanceMemberName(lowerer, expr.name));
     const probed = field ? tryLowerExpression(lowerer, expr.expression) : null;
     if (owner && field && probed && checkedDynamicValue(probed)) {
       const value = checkedDynamicValue(lowerer.lowerExpr(expr.expression))!;
@@ -598,7 +599,7 @@ export function lowerPropertyAccessExpr(
         kind: "fieldGet",
         obj: checkedPrivateValue(lowerer, owner, expr, value, loc),
         className: owner.def.name,
-        field: privateFieldName(lowerer, expr.name),
+        field: privateInstanceMemberName(lowerer, expr.name),
         type: field,
         loc,
       };
@@ -2164,13 +2165,13 @@ export function lowerPropertyAccessExpr(
   if (ts.isPrivateIdentifier(expr.name) && recvLowered.type.kind === "object") {
     const field = lowerer.classes
       .get(recvLowered.type.className)
-      ?.fields.get(privateFieldName(lowerer, expr.name));
+      ?.fields.get(privateInstanceMemberName(lowerer, expr.name));
     if (field)
       return {
         kind: "fieldGet",
         obj: recvLowered,
         className: recvLowered.type.className,
-        field: privateFieldName(lowerer, expr.name),
+        field: privateInstanceMemberName(lowerer, expr.name),
         type: field,
         loc,
       };
@@ -4570,11 +4571,14 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   if (checkerArray?.type.kind === "record") receiverIr = checkerArray.type;
   if (
     receiverIr?.kind === "object" &&
-    (lowerer.findMethodOn(lowerer.classes.get(receiverIr.className) ?? null, expr.name.text) ||
+    (lowerer.findMethodOn(
+      lowerer.classes.get(receiverIr.className) ?? null,
+      privateMethodName(lowerer, expr.name),
+    ) ||
       findGenericMethodOn(
         lowerer,
         lowerer.classes.get(receiverIr.className) ?? null,
-        expr.name.text,
+        privateMethodName(lowerer, expr.name),
       ))
   ) {
     const info = lowerer.classes.get(receiverIr.className);
@@ -5924,7 +5928,7 @@ export function fieldTarget(
   if (isCjsExportsIdentifier(lowerer, access.expression)) return null;
   if (lowerer.chainBlocked(access)) return null;
   if (
-    privateFieldName(lowerer, access.name) === "stackTraceLimit" &&
+    privateInstanceMemberName(lowerer, access.name) === "stackTraceLimit" &&
     lowerer.isStdlibGlobal(access.expression, "Error")
   ) {
     return {
@@ -5951,7 +5955,7 @@ export function fieldTarget(
         lowerer,
         access.expression,
         ownerType,
-        privateFieldName(lowerer, access.name),
+        privateInstanceMemberName(lowerer, access.name),
       );
     }
   }
@@ -5959,7 +5963,7 @@ export function fieldTarget(
   // brand-checked receiver (checkedPrivateValue).
   if (ts.isPrivateIdentifier(access.name)) {
     const owner = privateNameClass(lowerer, access.name);
-    const probed = owner?.fields.has(privateFieldName(lowerer, access.name))
+    const probed = owner?.fields.has(privateInstanceMemberName(lowerer, access.name))
       ? tryLowerExpression(lowerer, access.expression)
       : null;
     if (owner && probed && checkedDynamicValue(probed)) {
@@ -5974,7 +5978,7 @@ export function fieldTarget(
         lowerer,
         access.expression,
         { kind: "object", className: owner.def.name },
-        privateFieldName(lowerer, access.name),
+        privateInstanceMemberName(lowerer, access.name),
         receiver,
       );
     }
@@ -5983,7 +5987,7 @@ export function fieldTarget(
   // type maps to its array): the class object's field.
   {
     const owner = arrayClassMemberOwner(lowerer, access);
-    const name = privateFieldName(lowerer, access.name);
+    const name = privateInstanceMemberName(lowerer, access.name);
     if (
       owner !== null &&
       (owner.fields.has(name) ||
@@ -6006,7 +6010,7 @@ export function fieldTarget(
         lowerer,
         access.expression,
         { kind: "object", className: owner.def.name },
-        privateFieldName(lowerer, access.name),
+        privateInstanceMemberName(lowerer, access.name),
         receiver,
       );
     }
@@ -6032,7 +6036,7 @@ export function fieldTarget(
       lowerer,
       access.expression,
       receiverIr,
-      privateFieldName(lowerer, access.name),
+      privateInstanceMemberName(lowerer, access.name),
     );
     if (target) return target;
     if (privateInstanceField(access.name, lowerer))
@@ -6049,7 +6053,7 @@ export function fieldTarget(
       return {
         container: "dynamic",
         obj: lowerer.coerceInto(access.expression, lowerer.lowerExpr(access.expression), DYN),
-        field: privateFieldName(lowerer, access.name),
+        field: privateInstanceMemberName(lowerer, access.name),
         fieldType: lowerer.irTypeOf(access),
       };
     }
@@ -6059,7 +6063,7 @@ export function fieldTarget(
     const target = representedClassFieldTarget(
       lowerer,
       access.expression,
-      privateFieldName(lowerer, access.name),
+      privateInstanceMemberName(lowerer, access.name),
       lowerer.lowerExpr(access.expression),
     );
     if (target) return target;

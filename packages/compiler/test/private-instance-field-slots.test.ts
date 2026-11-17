@@ -203,10 +203,6 @@ for (const [name, source] of positives) {
 
 for (const [name, source] of [
   [
-    "method collision",
-    `class Base{#x(){return 1;} base(){return this.#x();}}class Derived extends Base{#x(){return 2;} own(){return this.#x();}}console.log(new Derived().own());`,
-  ],
-  [
     "accessor collision",
     `class Base{get #x(){return 1;} base(){return this.#x;}}class Derived extends Base{#x=2;own(){return this.#x;}}console.log(new Derived().own());`,
   ],

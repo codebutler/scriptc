@@ -1,3 +1,8 @@
+import {
+  privateInstanceMemberName,
+  privateInstanceMethod,
+  privateMethodName,
+} from "./private-method-names.js";
 import { privateFieldName, privateInstanceField } from "./private-field-names.js";
 import { lowerVoidResolveCall } from "./promise-resolution.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
@@ -1028,6 +1033,15 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerCheckedPrivateMethodCall(lowerer, expr, expr.expression) ??
       lowerCheckedPrivateFieldCall(lowerer, expr, expr.expression);
     if (privateCall) return privateCall;
+    if (privateInstanceMethod(expr.expression.name)) {
+      const methodCall = lowerObjectMethodCall(lowerer, expr, expr.expression);
+      if (methodCall) return methodCall;
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "private instance method calls without a represented native or checked-brand receiver",
+      );
+    }
     if (privateInstanceField(expr.expression.name, lowerer)) {
       const target = lowerer.fieldTarget(expr.expression);
       if (target?.container === "class") {
@@ -13220,7 +13234,7 @@ function lowerObjectMethodCallOn(
     mappedReceiver?.kind === "array" ? arrayClassMemberOwner(lowerer, access) : null;
   if (arrayClassOwner !== null)
     mappedReceiver = { kind: "object", className: arrayClassOwner.def.name };
-  if (mappedReceiver?.kind === "union") {
+  if (mappedReceiver?.kind === "union" && !ts.isPrivateIdentifier(access.name)) {
     const dispatched =
       lowerUnionObjectMethodCall(lowerer, call, access, mappedReceiver) ??
       lowerUnionObjectDynFieldCall(lowerer, call, access, mappedReceiver);
@@ -13287,15 +13301,22 @@ function lowerObjectMethodCallOn(
   };
   const info =
     lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
-  const found = info ? lowerer.findMethodOn(info, privateFieldName(lowerer, access.name)) : null;
+  const memberKey = privateInstanceMemberName(lowerer, access.name);
+  const found = info ? lowerer.findMethodOn(info, memberKey) : null;
   // A member the class refused (class-member-refusals.ts): this call is a
   // statically visible use of it.
-  if (found) checkRefusedMemberUse(lowerer, found.declarer, access.name.text, access.name);
+  if (found) checkRefusedMemberUse(lowerer, found.declarer, memberKey, access.name);
   // An instance of a class a setPrototypeOf call may reprototype: once one
   // has another prototype, the call on it looks the method up through that
   // prototype, as JavaScript does. Every other instance makes the declared
   // call, and nothing is boxed until some instance's prototype changes.
-  if (info && found && staged === undefined && mayReplacePrototype(lowerer, info)) {
+  if (
+    info &&
+    found &&
+    !ts.isPrivateIdentifier(access.name) &&
+    staged === undefined &&
+    mayReplacePrototype(lowerer, info)
+  ) {
     const loc = locOf(call);
     const receiver = lowerReceiver();
     const local = lowerer.declareHiddenLocal("%reprototypedReceiver", receiver.type);
@@ -13431,10 +13452,11 @@ function lowerObjectMethodCallOn(
   // they monomorphize per call site and dispatch statically
   // (lowerClassGenericMethodCall has the exactness rules).
   if (info && !found) {
-    const gfound = findGenericMethodOn(lowerer, info, access.name.text);
+    const gfound = findGenericMethodOn(lowerer, info, memberKey);
     if (gfound)
       return lowerClassGenericMethodCall(lowerer, call, access, info, gfound, lowerReceiver());
   }
+  if (privateInstanceMethod(access.name) && !found) return null;
   // A field in call position (`this.cb()`): the call of the field's value.
   if (info && !found) {
     const fieldType = info.fields.get(privateFieldName(lowerer, access.name));
@@ -13486,7 +13508,7 @@ function lowerObjectMethodCallOn(
     return null;
   }
   if (!info || !found) return null;
-  const method = access.name.text;
+  const method = memberKey;
   if (isClassCallback(lowerer, info, method)) {
     const loc = locOf(call);
     const receiver = lowerReceiver();
@@ -14658,7 +14680,7 @@ function lowerCheckedPrivateMethodCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (!ts.isPrivateIdentifier(access.name)) return null;
-  const name = access.name.text;
+  const name = privateMethodName(lowerer, access.name);
   const owner = privateNameClass(lowerer, access.name);
   const found = owner ? lowerer.findMethodOn(owner, name) : null;
   if (!owner || !found || found.declarer !== owner || found.sig.abstract === true) return null;
@@ -14670,7 +14692,7 @@ function lowerCheckedPrivateMethodCall(
   const loc = locOf(call);
   const callee = `%${owner.def.name}.${name}`;
   lowerer.noteEdge(callee);
-  const receiver = checkedPrivateMethodReceiver(lowerer, owner, name, value, loc);
+  const receiver = checkedPrivateMethodReceiver(lowerer, owner, access.name.text, value, loc);
   const args = lowerer.completeArgs(call.arguments.nodes, found.sig.params, loc, call);
   return { kind: "call", callee, args: [receiver, ...args], type: found.sig.ret, loc };
 }

@@ -1,4 +1,9 @@
 import {
+  privateAncestorMember,
+  privateInstanceMethod,
+  privateMethodName,
+} from "./private-method-names.js";
+import {
   privateFieldName,
   privateInstanceField,
   privateMemberName,
@@ -914,17 +919,17 @@ export interface ClassInfo {
    * (findMethodOn). An `abstract` entry is a signature with no body (and
    * no module function): it declares the vtable slot; concrete subclasses
    * fill it (tsc guarantees every instantiable class implements).
-   * #PRIVATE members key by their spelled name ('#m', "get:#x") — no
-   * public identifier can collide, subclass redeclarations of an
-   * inherited private name are fenced at collection, and tsc confines
-   * every access site to the declaring class's body, so the base-chain
-   * walk IS lexical resolution and privates never join vtables (JS's
-   * no-dynamic-dispatch semantics by construction). A `gen` entry has a
+   * Ordinary private methods key by lexical declaration identity; private
+   * accessors keep their spelling and collision fences. Private calls do
+   * not override another declaration or join public virtual dispatch. A `gen` entry has a
    * generator body whose direct calls enter through its spawn wrapper. */
   methods: Map<string, ClassMethodSignature>;
   /** Own JS overrides whose signature cannot use the inherited ABI. The slot
    * retains that ABI, but its implementation throws before executing. */
   methodEntryFences?: Map<string, ScrDiagnostic>;
+  /** Newly admitted ordinary private method collisions. Generic value
+   * extraction keeps its fence until cross-specialization identity is supported. */
+  privateMethodCollisions?: ReadonlySet<string>;
   /** Own members whose declaration was refused without rejecting the class
    * (class-member-refusals.ts), keyed like `methods` ("m", "get:x",
    * "set:x"). Each keeps its slot, whose function throws the refusal at
@@ -2946,6 +2951,7 @@ export function collectClassShapeInner(
       }
     >();
     const methodEntryFences = new Map<string, ScrDiagnostic>();
+    const privateMethodCollisions = new Set<string>();
     const refusedMembers = new Map<string, RefusedClassMember>();
     const refusedStatics = new Map<string, RefusedClassMember>();
     // Member refusals confine in declaration-level TypeScript classes. A
@@ -2953,8 +2959,16 @@ export function collectClassShapeInner(
     // and a per-evaluation class lowers its members with the expression.
     const confinesMemberRefusals =
       !isJsSourceFile(ts.getSourceFileOfNode(decl)) && !perEvaluationClass(decl);
-    const memberDisplay = (name: string): string =>
-      `${decl.name?.text ?? className.replace(/^%/, "")}.${name}`;
+    const memberDisplay = (name: string): string => {
+      const source = decl.members.nodes.find(
+        (member) =>
+          member.name !== undefined &&
+          ts.isPrivateIdentifier(member.name) &&
+          privateMethodName(lowerer, member.name) === name,
+      );
+      const display = source?.name && ts.isPrivateIdentifier(source.name) ? source.name.text : name;
+      return `${decl.name?.text ?? className.replace(/^%/, "")}.${display}`;
+    };
     /** Refuses the member `key` and keeps its slot: `sig` is the slot's
      * ABI (the inherited one for an override), and the slot's function
      * throws the member's first diagnostic at entry. */
@@ -3424,59 +3438,52 @@ export function collectClassShapeInner(
         }
         lowerer.unsupported("SC1090", memberName, "Error.cause accessors");
       }
-      // Private fields have declaration-qualified storage. Only ordinary
-      // instance-field collisions are supported here; methods/accessors still
-      // dispatch by their lexical spelling and retain their collision fences.
+      // Private member collision policy follows source declarations. Qualified
+      // fields and methods must not disappear from these inherited-name fences.
       if (memberName && ts.isPrivateIdentifier(memberName)) {
-        const pname = memberName.text;
-        if (
-          base !== null &&
-          (base.fields.has(pname) ||
-            base.def.fields.some((field) => field.name.startsWith(`#private:${pname}.`)) ||
-            lowerer.findMethodOn(base, pname) !== null ||
-            lowerer.findMethodOn(base, `get:${pname}`) !== null ||
-            lowerer.findMethodOn(base, `set:${pname}`) !== null ||
-            findGenericMethodOn(lowerer, base, pname) !== null) &&
-          !(
+        const inherited = privateAncestorMember(base, decl, memberName.text);
+        if (inherited) {
+          const ownMethod = privateInstanceMethod(memberName);
+          const inheritedMethod = privateInstanceMethod(inherited.name);
+          const ordinaryInheritedMethod =
+            inheritedMethod &&
+            ts.isPrivateIdentifier(inheritedMethod.name) &&
+            !inherited.owner.genericMethods?.has(privateMethodName(lowerer, inheritedMethod.name));
+          let ordinaryAncestry = true;
+          let nongenericAncestry = true;
+          for (let ancestor = base; ancestor; ancestor = ancestor.base) {
+            if (ancestor.localClass || ancestor.mixinInstance) ordinaryAncestry = false;
+            if (ancestor.generic || ancestor.genericInstance) nongenericAncestry = false;
+            if (ancestor === inherited.owner) break;
+          }
+          const inheritedField = privateInstanceField(inherited.name);
+          const fieldCollision =
             privateInstanceField(memberName) &&
             !inst &&
             !familyMode &&
             !mixin &&
             !perEvaluationClass(decl) &&
-            (() => {
-              for (let ancestor: ClassInfo | null = base; ancestor; ancestor = ancestor.base) {
-                if (
-                  ancestor.generic ||
-                  ancestor.genericInstance ||
-                  ancestor.localClass ||
-                  ancestor.mixinInstance
-                )
-                  return false;
-                if (
-                  ancestor.decl?.members.nodes.some(
-                    (member) =>
-                      member.name !== undefined &&
-                      ts.isPrivateIdentifier(member.name) &&
-                      member.name.text === pname &&
-                      !ts
-                        .getModifiers(member)
-                        ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword),
-                  )
-                )
-                  return true;
-              }
-              return false;
-            })() &&
-            !lowerer.findMethodOn(base, `get:${pname}`) &&
-            !lowerer.findMethodOn(base, `set:${pname}`) &&
-            !findGenericMethodOn(lowerer, base, pname)
-          )
-        ) {
-          lowerer.unsupported(
-            "SC1090",
-            memberName,
-            `redeclaring the private name '${pname}' of a base class (JS gives each class its own distinct '${pname}' slot; this private member collision is outside the supported ordinary instance-field layouts)`,
-          );
+            ordinaryAncestry &&
+            nongenericAncestry &&
+            (inheritedField || ordinaryInheritedMethod);
+          const implicitJsMethod =
+            ownMethod &&
+            isJsSourceFile(ts.getSourceFileOfNode(ownMethod)) &&
+            ownMethod.parameters.nodes.some((parameter) => parameter.type === undefined);
+          const methodCollision =
+            ownMethod &&
+            ordinaryInheritedMethod &&
+            !implicitJsMethod &&
+            !mixin &&
+            !perEvaluationClass(decl) &&
+            ordinaryAncestry;
+          if (!fieldCollision && !methodCollision)
+            lowerer.unsupported(
+              "SC1090",
+              memberName,
+              `redeclaring the private name '${memberName.text}' of a base class (this private member collision is outside the supported ordinary instance-member layouts)`,
+            );
+          if (methodCollision) privateMethodCollisions.add(privateMethodName(lowerer, memberName));
         }
       }
       // The EventEmitter API surface is runtime-provided: a subclass
@@ -5164,6 +5171,21 @@ export function collectClassShapeInner(
           "private instance fields accessed before their declaration is initialized during construction",
         );
     }
+    for (const member of decl.members.nodes) {
+      if (
+        member.name &&
+        ts.isPrivateIdentifier(member.name) &&
+        privateInstanceMethod(member.name) &&
+        constructionFieldReads().beforePrivateInitialization(
+          privateMemberName(lowerer, member.name),
+        )
+      )
+        lowerer.unsupported(
+          "SC1090",
+          member.name,
+          "private instance methods accessed before their brand is initialized during construction",
+        );
+    }
     if (escape.assigned) {
       const readsEarly = (name: string): boolean => constructionFieldReads().early(name);
       for (const f of fieldOrder) {
@@ -5735,6 +5757,7 @@ export function collectClassShapeInner(
       ...(runtimeOptionalFields.size > 0 ? { runtimeOptionalFields } : {}),
       ...(erasedFields.size > 0 ? { erasedFields } : {}),
       methods,
+      ...(privateMethodCollisions.size ? { privateMethodCollisions } : {}),
       ...(methodEntryFences.size > 0 ? { methodEntryFences } : {}),
       ...(refusedMembers.size > 0 ? { refusedMembers } : {}),
       ...(refusedStatics.size > 0 ? { refusedStatics } : {}),
@@ -10427,9 +10450,9 @@ export function classMemberNameOf(lowerer: Lowerer, name: ts.PropertyName): stri
   if (ts.isIdentifier(name)) return name.text;
   if (ts.isStringLiteralLike(name)) return name.text;
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
-  // #private methods key by their spelled name ('#m') — '#' is
-  // unspellable in public identifiers, the accessor-colon precedent.
-  if (ts.isPrivateIdentifier(name)) return name.text;
+  // Ordinary instance methods use lexical declaration identity. Static and
+  // accessor names keep their separate existing storage/dispatch policies.
+  if (ts.isPrivateIdentifier(name)) return privateMethodName(lowerer, name);
   if (!ts.isComputedPropertyName(name)) return null;
   let e = name.expression;
   while (ts.isParenthesizedExpression(e)) e = e.expression;

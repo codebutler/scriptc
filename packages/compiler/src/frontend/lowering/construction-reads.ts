@@ -99,8 +99,8 @@ export interface ConstructionReads {
   /** Whether construction can read the class's field `name` through `this`
    * before the field's assignment. */
   early(name: string): boolean;
-  /** Private access (including writes) before the field declaration has
-   * installed its brand. A bare declaration still installs undefined. */
+  /** Private access before its brand is installed: fields at their
+   * declaration, methods after base construction but before own fields. */
   beforePrivateInitialization(name: string): boolean;
 }
 
@@ -413,6 +413,11 @@ export function constructionReads(
   // step of its initializer or of its top-level `this.x = e;` statement.
   const assignedAt = new Map<string, number>();
   const privateInitializedAt = new Map<string, number>();
+  const privateMethods = new Set<string>();
+  for (const member of decl.members.nodes) {
+    if (ts.isMethodDeclaration(member) && ts.isPrivateIdentifier(member.name) && !isStatic(member))
+      privateMethods.add(privateName(member.name));
+  }
   const own = constructionOf(decl);
   for (const member of own.initializers) {
     step++;
@@ -432,6 +437,7 @@ export function constructionReads(
   return {
     beforePrivateInitialization: (name) => {
       const access = privateAccessAt.get(name);
+      if (privateMethods.has(name)) return access !== undefined && access === 0;
       const initialized = privateInitializedAt.get(name);
       return access !== undefined && initialized !== undefined && access <= initialized;
     },
