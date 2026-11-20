@@ -140,3 +140,15 @@ arrays();
 throughUnknown();
 collections();
 lifetimes();
+
+interface Entry { label: string }
+function frozenEmptyEntries(): readonly Entry[] {
+  return Object.freeze([]);
+}
+const entries = frozenEmptyEntries();
+console.log(entries.length, entries === frozenEmptyEntries(), Object.isFrozen(entries));
+try {
+  (entries as Entry[]).push({ label: "changed" });
+} catch (e) {
+  console.log(e instanceof TypeError, entries.length);
+}

@@ -11149,6 +11149,21 @@ function lowerObjectStaticCall(
     let inner: ts.Expression = argNode;
     while (ts.isParenthesizedExpression(inner) || ts.isAsExpression(inner))
       inner = inner.expression;
+    // A fresh empty literal has no element or alias that fixes its storage.
+    // Allocate the destination's element layout before freezing the array.
+    const literal = withoutParentheses(argNode);
+    if (
+      ts.isArrayLiteralExpression(literal) &&
+      literal.elements.nodes.length === 0 &&
+      !isJsSourceFile(ts.getSourceFileOfNode(call))
+    ) {
+      const context = lowerer.checker.getContextualType(call);
+      const destination = context && lowerer.mapTypeOf(context);
+      if (destination?.kind === "array") {
+        const value = lowerer.lowerArrayLiteral(literal, destination);
+        return lowerNativeFreeze(lowerer, "array.freeze", value, locOf(call));
+      }
+    }
     const value =
       isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner))
