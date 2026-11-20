@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/required-subset-key-read.ts"
+ ],
+ "diags": []
+}

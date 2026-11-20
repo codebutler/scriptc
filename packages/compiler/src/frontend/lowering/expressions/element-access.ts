@@ -1810,12 +1810,22 @@ export function lowerRecordKeyRead(
         reachable.length > 0 &&
         (literalDomain === null || reachable.length < shape.fields.length)
       ) {
-        // A template's text may spell a name that is no declared field, so
-        // its answer holds undefined whatever the reachable fields declare.
+        // A missing property reads undefined, even when the named fields
+        // are all required. A key asserted into that literal domain may
+        // also name a different, present field. Read its actual value on
+        // the unmatched path before checking it against the result type.
         const joined = joinedFieldType(lowerer, reachable);
+        const readOtherFields =
+          literalDomain !== null &&
+          joined?.kind === "union" &&
+          lowerer.armTag(joined.unionId, UNDEFINED_T) < 0 &&
+          reachable.some((field) => !typeEquals(field.type, reachable[0]!.type));
         const join =
-          joined !== null && literalDomain === null ? lowerer.withUndefinedArmOf(joined) : joined;
+          joined && (literalDomain === null || readOtherFields)
+            ? lowerer.withUndefinedArmOf(joined)
+            : joined;
         if (
+          (!readOtherFields || recordKeyResultOk(lowerer, shape, DYN)) &&
           join !== null &&
           join.kind === "union" &&
           lowerer.armTag(join.unionId, UNDEFINED_T) >= 0 &&
@@ -1832,6 +1842,7 @@ export function lowerRecordKeyRead(
             loc,
             includeUndefined,
             expr,
+            readOtherFields,
           );
         }
       }
@@ -2170,6 +2181,7 @@ function lowerFiniteKeyedRead(
   loc: SrcLoc,
   includeUndefined: boolean,
   expr: ts.ElementAccessExpression,
+  readOtherFields: boolean,
 ): IrExpr {
   const stmts: IrStmt[] = [];
   const settle = (value: IrExpr, name: string, force = false): IrExpr => {
@@ -2191,6 +2203,12 @@ function lowerFiniteKeyedRead(
     type: answer,
     loc,
   };
+  if (readOtherFields) {
+    result = lowerer.coerceToExpected(
+      { kind: "recordKeyGet", obj: receiver, shapeId, key: stableKey, type: DYN, loc },
+      answer,
+    );
+  }
   for (let i = domain.length - 1; i >= 0; i--) {
     const name = domain[i]!;
     const field = shape.fields.find((f) => f.name === name);
