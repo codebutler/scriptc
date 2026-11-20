@@ -263,12 +263,7 @@ import {
   lowerProcessBuiltinModuleNamespace,
 } from "./builtins/process.js";
 import { recordMayKeepSource, recordSourceTest, throughRecordSource } from "./record-sources.js";
-import {
-  answerLinkedCopies,
-  linkedCopyBranches,
-  recordStringCall,
-  registerLinkedHelper,
-} from "./record-links.js";
+import { answerLinkedCopies, recordStringCall, registerLinkedHelper } from "./record-links.js";
 import { lowerPrototypeReflectionCall, lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
@@ -12264,18 +12259,30 @@ function lowerObjectEnumerationOverRecord(
     // checked view's values, checked into the result (which throws).
     registerLinkedHelper(lowerer, fn, argIr.shapeId, "custom");
     lowerer.linkedHelperFinalizers.push(() => {
-      // The answer for the composed record of a link, which can itself be
-      // a linked copy or keep a checked source: their properties come first.
-      // `path` holds the record types the links followed so far. Two types
-      // can link both ways (each lacks an optional field of the other): a
-      // composed record of this helper's own type calls the helper, and one
-      // of another type on the path answers from its checked view.
-      const answerAt =
-        (path: ReadonlySet<string>) =>
-        (composed: IrExpr & { kind: "varRef" }): IrStmt[] => {
-          const composedT = composed.type as IrType & { kind: "record" };
-          const sourceShape = lowerer.shapes.get(composedT.shapeId)!;
-          const view: IrExpr = { kind: "dynFrom", value: composed, liveRef: true, type: DYN, loc };
+      // A compose step consumes one link in the value's finite chain of
+      // source copies. Share its continuation by source shape: expanding
+      // every possible path here duplicates the same field walks.
+      const continuations = new Map<string, string>([[argIr.shapeId, fn.name]]);
+      const sourceAnswer = (composed: IrExpr & { kind: "varRef" }): IrStmt[] => {
+        const sourceType = composed.type as IrType & { kind: "record" };
+        const id = sourceType.shapeId;
+        let name = continuations.get(id);
+        if (name === undefined) {
+          name = keyedHelperName(lowerer, `%obj.${member}.source`, `${key}:${id}`);
+          continuations.set(id, name);
+          const receiver = varRef("r.0", sourceType, loc);
+          const source: IrFunction = {
+            name,
+            params: [{ localId: "r.0", name: "r", type: sourceType }],
+            returnType: resultT,
+            locals: [
+              { id: "r.0", name: "r", type: sourceType, mutable: false },
+              { id: "out.0", name: "out", type: resultT, mutable: false },
+            ],
+            body: [],
+            loc,
+          };
+          const view: IrExpr = { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc };
           const viewAnswer: IrStmt = {
             kind: "return",
             value: {
@@ -12292,57 +12299,36 @@ function lowerObjectEnumerationOverRecord(
             },
             loc,
           };
-          if (composedT.shapeId === argIr.shapeId)
-            return [
-              {
-                kind: "return",
-                value: { kind: "call", callee: fn.name, args: [composed], type: resultT, loc },
-                loc,
-              },
-            ];
-          if (path.has(composedT.shapeId)) return [viewAnswer];
           let fits = true;
-          const walk = fieldWalk(composed, sourceShape, linkedOut(fn, resultT), () => {
+          const walk = fieldWalk(receiver, lowerer.shapes.get(id)!, "out.0", () => {
             fits = false;
-            return {
-              kind: "exprStmt",
-              expr: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
-              loc,
-            };
+            return viewAnswer;
           });
-          const further = linkedCopyBranches(
-            lowerer,
-            fn,
-            composed,
-            composedT.shapeId,
-            answerAt(new Set([...path, composedT.shapeId])),
-          );
-          if (!fits) return [...further, viewAnswer];
-          if (!recordMayKeepSource(lowerer, composedT)) return [...further, ...walk];
-          return [
-            ...further,
-            {
+          source.body = fits ? walk : [viewAnswer];
+          if (fits && recordMayKeepSource(lowerer, sourceType))
+            source.body.unshift({
               kind: "if",
-              cond: recordSourceTest(composed, loc),
+              cond: recordSourceTest(receiver, loc),
               then: [viewAnswer],
               else_: null,
               loc,
-            },
-            ...walk,
-          ];
-        };
-      answerLinkedCopies(lowerer, fn, argIr.shapeId, answerAt(new Set([argIr.shapeId])));
+            });
+          answerLinkedCopies(lowerer, source, id, sourceAnswer);
+          lowerer.liftedFns.push(source);
+        }
+        return [
+          {
+            kind: "return",
+            value: { kind: "call", callee: name, args: [composed], type: resultT, loc },
+            loc,
+          },
+        ];
+      };
+      answerLinkedCopies(lowerer, fn, argIr.shapeId, sourceAnswer);
     });
   }
   const callee = helper;
   return sourced((receiver) => ({ kind: "call", callee, args: [receiver], type: resultT, loc }));
-}
-
-/** A fresh hidden local of `fn` for a linked copy's values or entries. */
-function linkedOut(fn: IrFunction, type: IrType): string {
-  const id = `linkedOut.${fn.locals.length}`;
-  fn.locals.push({ id, name: "linkedOut", type, mutable: false });
-  return id;
 }
 
 /** An entries array consumed pair by pair right where it is built: a
