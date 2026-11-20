@@ -4553,6 +4553,7 @@ export function collectClassShapeInner(
                           (id) => lowerer.shapes.get(id),
                           (id) => lowerer.unions.get(id),
                         )) ||
+                      callbackAcceptsExtraArguments(lowerer, p.type, shapes[i]!.type) ||
                       lowerer.coercibleValue(p.type, shapes[i]!.type))) ||
                   // Or a NARROWING (method parameters are bivariant): the
                   // override declares an arm of the inherited union, the
@@ -4568,7 +4569,10 @@ export function collectClassShapeInner(
                     }))),
             ) &&
             (ownAsync ? ft.ret.kind === "promise" : true) &&
-            (typeEquals(ft.ret, overridden.sig.ret) ||
+            (typeEquals(
+              overrideReturnAbi(lowerer, ft.ret, overridden.sig.ret, className, base),
+              overridden.sig.ret,
+            ) ||
               (overridden.sig.ret.kind === "dyn"
                 ? ft.ret.kind !== "void" && lowerer.dynConvertible(ft.ret)
                 : lowerer.coercibleValue(ft.ret, overridden.sig.ret) ||
@@ -9407,9 +9411,33 @@ function abstractMemberSignature(
   };
 }
 
-/** A nominal return subtype uses the same owned pointer as the inherited
- * return slot. The current class is still being collected, so consult its
- * already collected base chain before the complete class graph is available. */
+/** An override may supply more arguments to a fixed-arity callback. The
+ * ordinary function coercion builds its adapter and records the arity
+ * change for the variadic-function check. */
+function callbackAcceptsExtraArguments(lowerer: Lowerer, inherited: IrType, own: IrType): boolean {
+  return (
+    inherited.kind === "func" &&
+    own.kind === "func" &&
+    !inherited.rest &&
+    !own.rest &&
+    inherited.params.length < own.params.length &&
+    typeEquals(inherited.ret, own.ret) &&
+    inherited.params.every((param, index) => typeEquals(param, own.params[index]!)) &&
+    lowerer.cleanFuncAdaptable(inherited, own)
+  );
+}
+
+export function overrideSuppliesCallbackArguments(
+  lowerer: Lowerer,
+  inherited: readonly ParamShape[],
+  declared: readonly ParamShape[],
+): boolean {
+  return declared.some((shape, i) => {
+    const slot = inherited[i];
+    return slot !== undefined && callbackAcceptsExtraArguments(lowerer, slot.type, shape.type);
+  });
+}
+
 /** An inherited ASYNC method that an override now dispatches against: its
  * slot becomes a plain function returning the body's promise, and the
  * async body lowers behind it as `%C.m$own` (the adapter path with an
@@ -9440,6 +9468,9 @@ function thunkAsyncSlot(
   delete overridden.sig.async;
 }
 
+/** A nominal return subtype uses the same owned pointer as the inherited
+ * return slot. The current class is still being collected, so consult its
+ * already collected base chain before the complete class graph is available. */
 function overrideReturnAbi(
   lowerer: Lowerer,
   declared: IrType,
@@ -12215,9 +12246,14 @@ export function lowerSuperMethodCall(
   // adapted override answers with its own body: that is the only entry that
   // carries a parameter past the inherited slot arity, and the entry whose
   // parameter list is the one the call was checked against when the
-  // override declares fewer parameters than the slot.
+  // override declares fewer parameters than the slot or supplies extra
+  // arguments to an inherited callback.
   const superAdapted = found.declarer.returnAdapters?.get(memberName);
-  if (superAdapted && superAdapted.params.length !== found.sig.params.length) {
+  if (
+    superAdapted &&
+    (superAdapted.params.length !== found.sig.params.length ||
+      overrideSuppliesCallbackArguments(lowerer, found.sig.params, superAdapted.params))
+  ) {
     const ownArgs = lowerer.completeArgs(call.arguments.nodes, superAdapted.params, loc, call);
     return lowerer.reconcileCallReturn(call, {
       kind: "call",

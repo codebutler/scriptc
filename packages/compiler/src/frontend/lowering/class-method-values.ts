@@ -19,6 +19,7 @@ import { isJsSourceFile, locOf } from "../program.js";
 import { newFnCtx, PoisonError, type Lowerer } from "./lowerer.js";
 import {
   classMemberNameOf,
+  overrideSuppliesCallbackArguments,
   findGenericMethodOn,
   findMethodOn,
   genericOverrideBelow,
@@ -322,10 +323,16 @@ export function classMethodValue(
     owner = found.declarer;
     if (found.sig.abstract)
       lowerer.unsupported("SC1090", blame, "values of abstract method declarations");
-    params = found.sig.params;
-    ret = found.sig.ret;
-    callee = `%${owner.def.name}.${method}`;
-    if (!owner.builtinError) lowerer.noteEdge(callee);
+    const slot = `%${owner.def.name}.${method}`;
+    const adapter = owner.returnAdapters?.get(method);
+    const own =
+      adapter && overrideSuppliesCallbackArguments(lowerer, found.sig.params, adapter.params)
+        ? adapter
+        : undefined;
+    params = own?.params ?? found.sig.params;
+    ret = own?.ret ?? found.sig.ret;
+    callee = own ? slot + "$own" : slot;
+    if (!owner.builtinError) lowerer.noteEdge(slot);
   } else if (
     generic?.info.implicitParams &&
     generic.declarer.decl &&

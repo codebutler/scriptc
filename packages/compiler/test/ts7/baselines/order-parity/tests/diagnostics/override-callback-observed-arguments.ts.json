@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/override-callback-observed-arguments.ts"
+ ],
+ "diags": []
+}

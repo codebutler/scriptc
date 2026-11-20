@@ -1,0 +1,6 @@
+override-callback-observed-arguments.ts:8:17 - error SC1090: variadic function values stored as '() => void' in a program that hands a function of that type to a function type with 1 parameter at override-callback-observed-arguments.ts:5:3, which can call it with more than the 0 arguments the type names (the stored function would not receive them: store a function that names the arguments it uses, or call it from one) are not supported yet
+
+  7 | function register(widget: Widget): void {
+  8 |   widget.onBlur(function () { console.log("base callback", arguments.length, arguments[0]); });
+    |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  9 | }

@@ -310,6 +310,7 @@ import {
   lowerNetServerAsyncDisposeCall,
 } from "./lower-server.js";
 import {
+  overrideSuppliesCallbackArguments,
   EMITTER_API_MEMBERS,
   builtinSuppliesMethod,
   exactClassOfReceiver,
@@ -14049,16 +14050,15 @@ function lowerObjectMethodCallOn(
     const local = lowerer.declareHiddenLocal("%callbackReceiver", receiver.type);
     const value: IrExpr = { kind: "varRef", localId: local.id, type: receiver.type, loc };
     const virtual = lowerer.overrideBelow(info, method);
-    // The nearest declaration is a TypeScript override declaring parameters
-    // past the inherited slot arity, with nothing below it: the unchanged
-    // method is that override, so its native call enters the override's own
-    // body under its declared parameter list, as the ordinary call below
-    // does. A replaced slot still takes the dynamic call with every argument.
+    // A direct call to a TypeScript override uses its declared parameters
+    // when its method arity or callback arity differs from the inherited
+    // slot. A replaced method receives the actual arguments dynamically.
     const widened = found.declarer.returnAdapters?.get(method);
     const own =
       widened !== undefined &&
       !virtual &&
-      widened.params.length !== found.sig.params.length &&
+      (widened.params.length !== found.sig.params.length ||
+        overrideSuppliesCallbackArguments(lowerer, found.sig.params, widened.params)) &&
       !(found.declarer.decl && isJsSourceFile(ts.getSourceFileOfNode(found.declarer.decl)))
         ? widened
         : null;
