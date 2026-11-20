@@ -228,31 +228,23 @@ export function lowerMapMethodCall(
   }
 
   if (name === "get") {
-    const k = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.key);
-    // The checker types the call `V | undefined`, which interns the
-    // result union. `undefined` sorts LAST among all possible arm
-    // typeKeys, so when V is itself a union its arms keep their tags in
-    // the result union — the backend leans on that (docs/ir.md).
-    // instanceof on a readonly view can erase the checker's value type
-    // to any. Recover that case from native storage; otherwise preserve
-    // the contextual return mapping for recursive and generic values.
-    const erased = (lowerer.typeOf(call).flags & ts.TypeFlags.Any) !== 0;
+    const { key, value } = receiver.type;
+    const k = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, key);
+    // A Map intrinsic reads the value layout stored by this map, including
+    // when the checker's view of a recursive value uses another record layout.
     const type =
-      receiverIr.value.kind === "dyn"
+      value.kind === "dyn"
         ? DYN
-        : erased
-          ? (lowerer.withUndefinedArmOf(receiverIr.value) ??
-            lowerer.withUndefinedArm(receiverIr.value))
-          : lowerer.irTypeOf(call);
-    if (type.kind !== "union" && type.kind !== "dyn") lowerer.badType(call, lowerer.typeOf(call));
+        : (lowerer.withUndefinedArmOf(value) ?? lowerer.withUndefinedArm(value));
     return { kind: "mapIntrinsic", method: "get", receiver, args: [k], type, loc };
   }
   if (name === "set") {
-    const k = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.key);
+    const { key, value } = receiver.type;
+    const k = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, key);
     const v =
-      receiverIr.value.kind === "dyn"
-        ? lowerer.lowerCollectionKey(call.arguments.nodes[1]!, receiverIr.value)
-        : lowerer.lowerExprExpecting(call.arguments.nodes[1]!, receiverIr.value);
+      value.kind === "dyn"
+        ? lowerer.lowerCollectionKey(call.arguments.nodes[1]!, value)
+        : lowerer.lowerExprExpecting(call.arguments.nodes[1]!, value);
     // A discarded set result needs no second receiver read or identity
     // owner. Keep the ordinary operand order: receiver, key, then value.
     let parent: ts.Node | undefined = call.parent;
