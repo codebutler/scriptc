@@ -242,6 +242,7 @@ import {
   locOf,
   requireEarlyReference,
   requireSpecOf,
+  isNodeEsmFile,
 } from "../program.js";
 import { callableDeleteKey, callableMemberWriteTarget } from "./callable-properties.js";
 import { isStrictCode } from "./strict-mode.js";
@@ -4988,11 +4989,21 @@ export function lowerBindingPattern(
         shape.indexValue.kind === "dyn"
           ? shape.indexValue
           : (lowerer.withUndefinedArmOf(shape.indexValue) ?? shape.indexValue);
+      // Read a computed const at the element's position, including its
+      // temporal dead zone. Only the rest helper substitutes its spelling.
+      const readKey =
+        shape.fields.length === 0 &&
+        pattern.elements.nodes.at(-1)?.dotDotDotToken &&
+        ts.isComputedPropertyName(prop) &&
+        ts.isIdentifier(prop.expression) &&
+        constantDictionaryKey(lowerer, prop) !== null
+          ? lowerer.lowerExpr(prop.expression)
+          : { kind: "strLit" as const, value: propName, type: STRING, loc };
       let value: IrExpr = {
         kind: "recordKeyGet",
         obj: srcRef(),
         shapeId: srcType.shapeId,
-        key: { kind: "strLit", value: propName, type: STRING, loc },
+        key: readKey,
         overflowOnly: true,
         type: readType,
         loc,
@@ -6747,6 +6758,39 @@ function tupleTailValue(
   );
 }
 
+/** The spelling of a computed dictionary key when its value is a source
+ * string literal or a const initialized to one. A checker literal alone
+ * can come from a type assertion or a parameter. */
+function constantDictionaryKey(lowerer: Lowerer, prop: ts.ComputedPropertyName): string | null {
+  const expr = prop.expression;
+  if (ts.isStringLiteralLike(expr)) return expr.text;
+  if (!ts.isIdentifier(expr)) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(expr);
+  if (!symbol) return null;
+  const target =
+    symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
+  const decl = target.valueDeclaration;
+  if (
+    !decl ||
+    !ts.isVariableDeclaration(decl) ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    !(decl.parent.flags & ts.NodeFlags.Const) ||
+    !decl.initializer ||
+    !ts.isStringLiteralLike(decl.initializer) ||
+    ts.getSourceFileOfNode(decl).isDeclarationFile ||
+    ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Ambient
+  )
+    return null;
+  if (
+    symbol !== target &&
+    (!symbol.declarations.some(ts.isImportSpecifier) ||
+      !isNodeEsmFile(ts.getSourceFileOfNode(decl), lowerer.program))
+  )
+    return null;
+  const spelling = decl.initializer.text;
+  return lowerer.foldedStringKeyOf(expr) === spelling ? spelling : null;
+}
+
 /** The fresh record for `{ a, ...rest }` over a RECORD source: the
  * checker's rest type names exactly the unconsumed fields, and each
  * copies out of the source at destructure time (JS's CopyDataProperties
@@ -6771,16 +6815,25 @@ function objectRestValue(
 ): IrExpr {
   const loc = locOf(el);
   const restT = patternBindingType(lowerer, el.name!); // callers skip nameless elisions
-  // The consumed set is the pattern's literal sibling keys: a computed
-  // sibling would make it a runtime fact and fences.
+  // The exclusion list can contain a computed key when the dictionary
+  // read uses a string whose spelling is fixed by its initializer.
   const consumed = new Set<string>();
   let computedSibling = false;
   if (ts.isObjectBindingPattern(el.parent)) {
     for (const sib of el.parent.elements.nodes) {
       if (sib === el || sib.dotDotDotToken) continue;
       const key = sib.propertyName ?? sib.name;
-      if (key && ts.isComputedPropertyName(key)) computedSibling = true;
-      else if (key && (ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key)))
+      if (key && ts.isComputedPropertyName(key)) {
+        const name =
+          shape.indexValue !== undefined && shape.fields.length === 0
+            ? constantDictionaryKey(lowerer, key)
+            : null;
+        if (name === null || OBJECT_PROTOTYPE_KEYS.has(name)) computedSibling = true;
+        else consumed.add(name);
+      } else if (
+        key &&
+        (ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key))
+      )
         consumed.add(key.text);
     }
   }

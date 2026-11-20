@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/constant-dictionary-rest/key.ts",
+  "<repo>/tests/corpus/constant-dictionary-rest/main.ts"
+ ],
+ "diags": []
+}
