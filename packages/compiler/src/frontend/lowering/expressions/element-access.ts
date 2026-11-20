@@ -185,6 +185,25 @@ function classKeyedReadResult(
   return optional ? lowerer.coerceInto(expr, read, optional) : lowerer.maybeNarrow(read, expr);
 }
 
+// A JavaScript binding can hold a different typed array from the default
+// constructor that supplied its checker type. Numeric indexing uses the
+// actual array's element representation.
+function jsIndexedBytesBinding(
+  lowerer: Lowerer,
+  access: ts.ElementAccessExpression,
+  value: IrExpr,
+): IrExpr | null {
+  if (
+    value.kind !== "dynCheck" ||
+    value.type.kind !== "bytes" ||
+    !ts.isIdentifier(access.expression) ||
+    !isJsSourceFile(ts.getSourceFileOfNode(access)) ||
+    lowerer.mapTypeOf(lowerer.typeOf(access.argumentExpression))?.kind !== "f64"
+  )
+    return null;
+  return value.value;
+}
+
 export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpression): IrExpr {
   // The bracket spelling of the mutableBuffers fact (`b["transfer"]()`,
   // buffers.ts, t262-dc §2.4).
@@ -623,6 +642,15 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   // read undefined — divergence 4's policy).
   if (receiverIr?.kind === "bytes") {
     let recv = lowerer.lowerExpr(expr.expression);
+    const binding = jsIndexedBytesBinding(lowerer, expr, recv);
+    if (binding) {
+      const key = lowerRecordPropertyKey(
+        lowerer,
+        lowerer.lowerExpr(expr.argumentExpression),
+        expr.argumentExpression,
+      );
+      return { kind: "dynKeyGet", value: binding, key, type: DYN, loc: locOf(expr) };
+    }
     if (recv.type.kind === "dyn") recv = lowerer.coerceInto(expr.expression, recv, receiverIr);
     if (recv.type.kind === "union" && lowerer.armTag(recv.type.unionId, UNDEFINED_T) >= 0) {
       const present = lowerer.stripUndefinedArm(recv.type);
@@ -3104,7 +3132,8 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
   // Typed-array element write `b[i] = v` — bytesSet: the value is an f64
   // the runtime coerces JS-exactly; invalid indices are ignored.
   if (receiverIr?.kind === "bytes") {
-    const recv = lowerer.lowerExpr(target.expression);
+    const inferred = lowerer.lowerExpr(target.expression);
+    const recv = jsIndexedBytesBinding(lowerer, target, inferred) ?? inferred;
     // The checker's flow type is a typed array, but the storage is wider.
     if (recv.type.kind !== "bytes") return lowerWiderBytesWrite(lowerer, expr, target, recv);
     // An index the checker types as a number but whose storage may hold
