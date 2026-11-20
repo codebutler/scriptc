@@ -5,12 +5,13 @@ import { expect, test } from "vitest";
 import { compile, deserializeModule, validateModule } from "../src/index.js";
 import type { IrModule } from "../src/ir/ir.js";
 
-async function lower(source: string): Promise<IrModule> {
+async function lower(source: string, modules: Record<string, string> = {}): Promise<IrModule> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-class-static-reflection-"));
   try {
     const entry = join(dir, "main.ts");
     const output = join(dir, "main.ir.json");
     await writeFile(entry, source);
+    for (const [name, text] of Object.entries(modules)) await writeFile(join(dir, name), text);
     const result = await compile(entry, { outDir: dir, outPath: output, outputKind: "ir" });
     if (!result.ok)
       throw new Error(result.diagnostics.map((item) => `${item.code}: ${item.message}`).join("\n"));
@@ -63,4 +64,26 @@ const timer = new Timer(new Item());
 console.log(descriptorOf(timer) !== undefined);
 `);
   expect(module.functions.length).toBeGreaterThan(0);
+});
+
+test("an imported module installs class statics inside its guarded evaluation", async () => {
+  const source = `class Entry {}
+Entry.empty = new Entry();
+console.log(Entry.empty instanceof Entry);
+export {};`;
+  const module = await lower('await import("./entry.mjs"); export {};', { "entry.mjs": source });
+  const init = module.functions.find(
+    (fn) => fn.name.startsWith("%init") && fn.loc.file.endsWith("/entry.mjs"),
+  );
+  const guarded = init?.body.find((stmt) => stmt.kind === "tryCatch");
+  if (guarded?.kind !== "tryCatch") throw new Error("missing module evaluation guard");
+  const install = guarded.tryBody.findIndex(
+    (stmt) =>
+      stmt.kind === "exprStmt" &&
+      stmt.expr.kind === "call" &&
+      stmt.expr.callee.startsWith("%dyn.class.statics."),
+  );
+  const use = guarded.tryBody.findIndex((stmt) => stmt.loc.start >= source.indexOf("Entry.empty"));
+  expect(install).toBeGreaterThanOrEqual(0);
+  expect(use).toBeGreaterThan(install);
 });

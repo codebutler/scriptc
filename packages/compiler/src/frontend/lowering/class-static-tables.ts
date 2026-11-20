@@ -475,14 +475,28 @@ export function insertClassStaticsInstall(
     },
     loc,
   };
+  // CommonJS evaluation and ESM imports that remember a failure put the
+  // module statements inside a generated try. Install in that same region
+  // so later reads see the statics and failure follows the module's rules.
+  const moduleError = init.locals.find((local) => local.name === "%moduleError");
+  const wrapper =
+    moduleError &&
+    init.body.find((stmt) => stmt.kind === "tryCatch" && stmt.catchLocalId === moduleError.id);
+  const body = wrapper?.kind === "tryCatch" ? wrapper.tryBody : init.body;
   const end = decl.end;
   const file = sf.fileName;
   let at = 0;
-  for (let i = 0; i < init.body.length; i++) {
-    const statement = init.body[i]!;
+  for (let i = 0; i < body.length; i++) {
+    const statement = body[i]!;
+    if (
+      statement.kind === "exprStmt" &&
+      statement.expr.kind === "libCall" &&
+      statement.expr.fn === "module.finish"
+    )
+      break;
     if (statement.loc.file !== file || statement.loc.start >= end) continue;
     at = i + 1;
   }
-  init.body.splice(at, 0, call);
+  body.splice(at, 0, call);
   return true;
 }
