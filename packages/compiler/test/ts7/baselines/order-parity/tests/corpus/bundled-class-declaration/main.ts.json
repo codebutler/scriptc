@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/bundled-class-declaration/bundled.d.mts",
+  "<repo>/tests/corpus/bundled-class-declaration/main.ts"
+ ],
+ "diags": []
+}

@@ -213,3 +213,42 @@ test("JSX authored checking retains relative declaration contracts", async () =>
     ),
   ).toBe(true);
 });
+
+const bundledCounter = {
+  "node_modules/counter-api/package.json": JSON.stringify({
+    name: "counter-api",
+    version: "1.0.0",
+    type: "module",
+    exports: { ".": { types: "./index.d.ts", import: "./index.js" } },
+  }),
+  "node_modules/counter-api/index.d.ts":
+    "export declare class Counter { static create(n: number): Counter; readonly value: number; }",
+  "node_modules/counter-api/index.js":
+    "export class Counter { static create(n) { return {value: n + 1000}; } }",
+  "vendor/counter.d.mts": 'export {Counter} from "counter-api";',
+  "vendor/counter.mjs":
+    "class Local { constructor(n) { this.value=n; } static create(n) { return new Local(n); } } export { Local as Counter };",
+};
+
+test("a bundled class can supply the type of an instance field", async () => {
+  const { result } = await fixture({
+    ...bundledCounter,
+    "main.ts":
+      'import {Counter} from "./vendor/counter.mjs"; class Local { #state: Counter; constructor(n:number){this.#state=Counter.create(n);} get value(){return this.#state.value;} } console.log(new Local(42).value);',
+  });
+  expect(result.ok, JSON.stringify(result.ok ? [] : result.diagnostics)).toBe(true);
+});
+
+test("bundled declarations still check the published argument type", async () => {
+  const { result } = await fixture({
+    ...bundledCounter,
+    "main.ts":
+      'import {Counter} from "./vendor/counter.mjs"; console.log(Counter.create("wrong"));',
+  });
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(
+      result.diagnostics.some((d) => d.code === "SC0001" && d.message.includes("number")),
+    ).toBe(true);
+  }
+});

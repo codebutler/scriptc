@@ -2546,9 +2546,9 @@ export function loadProgram(
   // --npm-static's per-package hiding: an opted-in package's declaration
   // entry points must not exist for the checker, so its resolution lands on
   // the JavaScript Node actually loads. A PROJECT declaration twin (.d.ts
-  // beside runtime JS outside node_modules) is not hidden: TypeScript
-  // resolves the import to the declaration, and the JavaScript joins the
-  // program as the module's implementation (declarationTwinRoots7).
+  // beside runtime JS outside node_modules) normally supplies its own types.
+  // A bundle which forwards its declarations to an npm package uses its
+  // local implementation in this world. The authored world keeps the types.
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
   setProgramDefines(opts?.define);
@@ -2572,6 +2572,7 @@ export function loadProgram(
     const source = trackedReadSource(path);
     return source === null ? undefined : (scriptcConditionManifestAt(path, source) ?? undefined);
   };
+  const bundledDeclarations = new Set<string>();
   const fsShadow = {
     readFile: (path: string) =>
       voidCasts(
@@ -2582,7 +2583,8 @@ export function loadProgram(
           definedSource(services, path) ??
           undefined,
       ),
-    hideFile: (path: string) => npmShadow?.hideFile(path) ?? false,
+    hideFile: (path: string) =>
+      bundledDeclarations.has(tsgoPath(path)) || (npmShadow?.hideFile(path) ?? false),
   };
   const authoredShadow = {
     readFile: (path: string) => voidCasts(path, scriptcManifest(path)),
@@ -2594,6 +2596,9 @@ export function loadProgram(
     const pair = registerRelativeJsEntry(from, specifier);
     if (pair === null) return false;
     hasRelativeDeclarations = true;
+    if (runtimeImplementsPackageReexports(services, pair.declaration, pair.runtime)) {
+      bundledDeclarations.add(tsgoPath(pair.declaration));
+    }
     const plan = declarationTypeExportPlan(services, [pair]);
     for (const [file, text] of plan.copies) host.addVirtualFile(file, text);
     for (const [file, typedefs] of plan.typedefs) {
@@ -9154,6 +9159,44 @@ function declaredBindingNames(name: ts.BindingName, out: Set<string>): void {
     if (ts.isOmittedExpression(element) || element.name === undefined) continue;
     declaredBindingNames(element.name, out);
   }
+}
+
+/** A local JS bundle can publish its API by re-exporting the original npm
+ * declarations. When it provides every named export itself, the lowering
+ * checker must resolve the import to this particular bundle. The authored
+ * checker still validates the application against its published declarations. */
+function runtimeImplementsPackageReexports(
+  services: FrontendServices,
+  declaration: string,
+  runtime: string,
+): boolean {
+  const text = packageSourceText(declaration);
+  if (text === null) return false;
+  const names = new Set<string>();
+  for (const statement of services.parse(declaration, text, "ts").statements.nodes) {
+    if (
+      !ts.isExportDeclaration(statement) ||
+      statement.isTypeOnly ||
+      !ts.isNamedExports(statement.exportClause) ||
+      !ts.isStringLiteral(statement.moduleSpecifier)
+    )
+      return false;
+    const specifier = statement.moduleSpecifier.text;
+    if (
+      isRelativeSpecifier(specifier) ||
+      resolveBareModule(declaration, specifier, "types-only") === null
+    )
+      return false;
+    for (const element of statement.exportClause.elements.nodes) {
+      if (element.isTypeOnly) return false;
+      names.add(element.name.text);
+    }
+  }
+  if (names.size === 0) return false;
+  const js = packageSourceText(runtime);
+  if (js === null) return false;
+  const exports = ownExportNamesOf(services.parse(runtime, js, "js"));
+  return [...names].every((name) => exports.has(name));
 }
 
 /** The names a module exports itself, from its syntax: `export`-modified
