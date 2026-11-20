@@ -1344,6 +1344,7 @@ const TDZ_KINDS = new Set<IrType["kind"]>([
   "map",
   "set",
   "regex",
+  "promise",
   "bytes",
   "f64",
   "bool",
