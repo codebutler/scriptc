@@ -2,7 +2,13 @@ import * as ts from "../ts7/adapter.js";
 import { BOOL, DYN, type IrExpr, type IrFunction, type SrcLoc } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
 import { isJsSourceFile } from "../program.js";
-import { findStaticOn, findGenericStaticOn, type ClassInfo } from "./lower-classes.js";
+import { classStaticsRepresentable } from "./class-static-tables.js";
+import {
+  classValueRef,
+  findStaticOn,
+  findGenericStaticOn,
+  type ClassInfo,
+} from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
 
 const constructorMembers = new Set([
@@ -75,6 +81,9 @@ export function classStaticData(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc):
     info.builtinError
   )
     return null;
+  if (info.decl && classStaticsRepresentable(lowerer, info)) {
+    return lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl), DYN);
+  }
   if (info.staticDataHelper === undefined) {
     const base =
       info.base && !info.base.builtinError ? classStaticData(lowerer, info.base, loc) : null;

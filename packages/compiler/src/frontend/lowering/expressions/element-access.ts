@@ -78,6 +78,7 @@ import {
   runtimeOptionalElementKey,
   symbolFieldTarget,
 } from "../lower-exprs.js";
+import { classStaticsRepresentable, classStaticsSubtreeReadable } from "../class-static-tables.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
@@ -925,12 +926,20 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
   if (receiverIr?.kind !== "array") {
     const receiver = tryLowerExpression(lowerer, expr.expression);
+    const classInfo =
+      receiver?.type.kind === "classval" ? lowerer.classes.get(receiver.type.className) : undefined;
     {
       if (
         receiver?.type.kind === "dyn" ||
         (receiver &&
           isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-          (receiver.type.kind === "union" || receiver.type.kind === "bytes") &&
+          (receiver.type.kind === "union" ||
+            receiver.type.kind === "bytes" ||
+            (classInfo &&
+              lowerer.mapTypeOf(lowerer.typeOf(expr.argumentExpression))?.kind === "string" &&
+              (receiver.kind === "classRef"
+                ? classStaticsRepresentable(lowerer, classInfo)
+                : classStaticsSubtreeReadable(lowerer, classInfo)))) &&
           lowerer.dynConvertible(receiver.type))
       ) {
         const key = lowerRecordPropertyKey(
