@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/error-stack-property-value/direct.js",
+  "<repo>/tests/corpus/error-stack-property-value/main.ts"
+ ],
+ "diags": []
+}

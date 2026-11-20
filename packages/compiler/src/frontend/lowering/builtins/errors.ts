@@ -237,16 +237,20 @@ export function lowerErrorCodeProperty(
             : recvT,
         )
       : rawReceiver;
-  if (systemField) {
+  // An Error's native stack slot holds strings. The object's property view
+  // also observes undefined assignments, deletion and replacement accessors.
+  if (systemField || expr.name.text === "stack") {
     const loc = locOf(expr);
+    const read: IrExpr = {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(receiver, DYN),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+    if (expr.name.text === "stack" && isJsSourceFile(ts.getSourceFileOfNode(expr))) return read;
     return lowerer.coerceToExpected(
-      {
-        kind: "dynKeyGet",
-        value: lowerer.coerceToExpected(receiver, DYN),
-        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
-        type: DYN,
-        loc,
-      },
+      read,
       expr.name.text === "code"
         ? lowerer.envValueType()
         : lowerer.withUndefinedArm(expr.name.text === "errno" ? F64 : STRING),
@@ -254,19 +258,9 @@ export function lowerErrorCodeProperty(
   }
   return {
     kind: "libCall",
-    fn:
-      expr.name.text === "stack"
-        ? "error.stack"
-        : expr.name.text === "cause"
-          ? "error.cause"
-          : "error.code",
+    fn: expr.name.text === "cause" ? "error.cause" : "error.code",
     args: [receiver],
-    type:
-      expr.name.text === "stack"
-        ? STRING
-        : expr.name.text === "cause"
-          ? DYN
-          : lowerer.envValueType(),
+    type: expr.name.text === "cause" ? DYN : lowerer.envValueType(),
     loc: locOf(expr),
   };
 }
