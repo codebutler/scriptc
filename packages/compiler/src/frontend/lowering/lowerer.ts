@@ -1390,19 +1390,20 @@ type RuntimeFenceTarget =
   | RuntimeFenceFunctionTarget
   | RuntimeFenceClosureTarget;
 
-/** A degraded checker type (Lowerer.degradedTypes): its lenient mapping and
- * the failure that degraded it. */
+/** A committed degradation decision. Its computed IR form belongs to one
+ * lowerer and binding context, and is never copied into another pass. */
 export interface DegradedType {
-  lenient: IrType | null;
-  code: string;
-  reason: string;
-  /** The type maps exactly from its canonical form (stage N2): its slots
-   * are static. */
-  canonical?: true;
-  /** The type's canonical form maps but for an array of generators, which
-   * has no array storage: the slot that failed first and the type as
-   * written (generator-arrays.ts). */
-  generatorArray?: { loc: SrcLoc; type: string };
+  readonly stage: "initial" | "whole";
+  readonly code: string;
+  readonly reason: string;
+  readonly loc: SrcLoc;
+}
+
+/** A decision's form under the current IR and checker bindings. */
+interface DegradedForm {
+  readonly lenient: IrType;
+  readonly canonical?: true;
+  readonly generatorArray?: { loc: SrcLoc; type: string };
 }
 
 /** The Lowerer's pass configuration (see lowerToIr). */
@@ -6192,6 +6193,9 @@ export class Lowerer {
       checkedTable("untypedLoops", () => this.untypedLoops.size),
       checkedTable("classBagInitializers", () => this.classBagInitializers.size),
       checkedTable("degradedTypes", () => this.degradedTypes.size),
+      // Every consultation depends on the decision, including cache hits.
+      // Such a unit must lower again if a later retry changes that decision.
+      checkedTable("degradedFormReads", () => this.degradedFormReads),
       checkedTable("rejectedGroups", () => this.rejectedGroups.size),
       checkedTable("lenientPieces", () => this.lenientPieces.size),
       checkedTable("dynamicSlots", () => this.dynamicSlots.length),
@@ -6504,6 +6508,10 @@ export class Lowerer {
     "lastMemoOuter",
     "lastMemoInner",
     "lastMemo",
+    // Form caches follow immutable decision identity and binding memos.
+    // Their semantic reads are checked by degradedFormReads, not replayed.
+    "degradedForms",
+    "degradedFormReads",
     "fnStack",
     "positions.nodesByKey",
     "positions.paths",
@@ -6762,6 +6770,8 @@ export class Lowerer {
    * commit points (degradeAtCommit), so a program that compiles today
    * never fills it. */
   readonly degradedTypes = new Map<number, DegradedType>();
+  private readonly degradedForms = new Map<DegradedType, Map<object, DegradedForm>>();
+  private degradedFormReads = 0;
   /** A pushed-down (partial) degraded type was mapped (hasPartialDegradedTypes). */
   private partialDegradedTypesMapped = false;
   /** The components lenient mappings turned into the checked dynamic, by
@@ -7371,14 +7381,10 @@ export class Lowerer {
   ) {
     // The mode's options, sorted by name; the values derived from them follow.
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
-    // Lenient forms are IR types of the other pass's shape tables: only the
-    // whole-slot dynamic carries over as is.
+    // Only decisions cross passes. Forms are recomputed in this lowerer's
+    // registries under the bindings active at each use.
     if (mode.degradedTypes)
-      for (const [id, degraded] of mode.degradedTypes)
-        this.degradedTypes.set(id, {
-          ...degraded,
-          lenient: degraded.lenient?.kind === "dyn" ? DYN : null,
-        });
+      for (const [id, degraded] of mode.degradedTypes) this.degradedTypes.set(id, { ...degraded });
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.wholeSlotDegradation = mode.wholeSlotDegradation ?? false;
     this.untypedConstructors = mode.untypedConstructors ?? false;
@@ -7451,17 +7457,8 @@ export class Lowerer {
       degradedType: (type) => {
         const id = (type as { id?: number }).id;
         if (id === undefined) return null;
-        const degraded = this.degradedTypes.get(id);
+        const degraded = this.degradedForm(id, type);
         if (degraded === undefined) return null;
-        // An entry handed over from another pass (the coverage remainder)
-        // re-derives its lenient form in this lowerer's shape tables; the
-        // checked dynamic cuts the knot while it does.
-        if (degraded.lenient === null) {
-          degraded.lenient = DYN;
-          degraded.lenient =
-            (degraded.canonical === true ? this.canonicalType(type) : null) ??
-            this.lenientType(type);
-        }
         if (degraded.lenient.kind !== "dyn" && degraded.canonical !== true) {
           this.partialHits[this.partialHits.length - 1]?.add(id);
           this.partialDegradedTypesMapped = true;
@@ -15592,7 +15589,7 @@ export class Lowerer {
     const id = (type as { id?: number }).id;
     // Already degraded to the whole-slot dynamic and still failing: no
     // progress, commit as today.
-    if (id === undefined || this.degradedTypes.get(id)?.lenient?.kind === "dyn") return null;
+    if (id === undefined || this.degradedForm(id, type)?.lenient.kind === "dyn") return null;
     let committed: ScrDiagnostic | undefined;
     for (let i = this.diags.length - 1; i >= 0; i--) {
       if (this.diags[i]!.typeFailure !== failure) continue;
@@ -15602,7 +15599,7 @@ export class Lowerer {
     if (committed === undefined) return null;
     this.degradeType(type, committed.code, committed.message, committed.loc);
     const canonical = this.isCanonicalDegraded(id);
-    const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
+    const partial = this.degradedForm(id, type)?.lenient.kind !== "dyn";
     return {
       ...(canonical ? { canonical: true as const } : {}),
       ...(partial ? { partial: true as const } : {}),
@@ -15628,17 +15625,19 @@ export class Lowerer {
       }
       return;
     }
-    const degraded = this.degradedTypes.get((type as { id?: number }).id ?? -1);
+    const id = (type as { id?: number }).id ?? -1;
+    const decision = this.degradedTypes.get(id);
+    const degraded = this.degradedForm(id, type);
     // A pushed-down type is one slot, reported where it degraded; only
     // whole-slot dynamic declarations are reported one by one.
-    if (degraded === undefined || degraded.lenient?.kind !== "dyn") return;
+    if (decision === undefined || degraded?.lenient.kind !== "dyn") return;
     const failure = typeFailureOf(node, this.checker.typeToString(type), "unsupported");
     if (failure.slot === "expression" || failure.slot === "member") return;
     this.noteDynamicSlot({
       loc: locOf(node),
       failure,
-      code: degraded.code,
-      reason: degraded.reason,
+      code: decision.code,
+      reason: decision.reason,
     });
   }
 
@@ -15770,6 +15769,65 @@ export class Lowerer {
     return mapped === null || mapped.kind === "void" ? DYN : mapped;
   }
 
+  /** Returns the current binding context's form of a committed decision.
+   * A recursive query sees a temporary dynamic form while it is computed. */
+  private degradedForm(id: number, type?: ts.Type): DegradedForm | undefined {
+    const decision = this.degradedTypes.get(id);
+    if (decision === undefined) return undefined;
+    this.degradedFormReads++;
+    const scope = this.currentTypeMemo();
+    let forms = this.degradedForms.get(decision);
+    const cached = forms?.get(scope);
+    if (cached !== undefined) return cached;
+    if (type === undefined) return decision.stage === "whole" ? { lenient: DYN } : undefined;
+    if (forms === undefined) this.degradedForms.set(decision, (forms = new Map()));
+    forms.set(scope, { lenient: DYN });
+    try {
+      const notes: CanonMapNotes = { collapsedToDynamic: false };
+      const mapped = this.canonicalType(type, notes);
+      const generatorArray =
+        mapped !== null && notes.generatorArray === true
+          ? { generatorArray: { loc: decision.loc, type: this.checker.typeToString(type) } }
+          : {};
+      const canonical =
+        generatorArray.generatorArray !== undefined && !this.hasNodeIslands() ? null : mapped;
+      const form: DegradedForm =
+        decision.stage === "whole"
+          ? { lenient: DYN, ...generatorArray }
+          : canonical !== null
+            ? { lenient: canonical, canonical: true, ...generatorArray }
+            : {
+                lenient: this.wholeSlotDegradation ? DYN : this.lenientType(type),
+                ...generatorArray,
+              };
+      forms.set(scope, form);
+      return form;
+    } catch (error) {
+      forms.delete(scope);
+      throw error;
+    }
+  }
+
+  /** Replaces a decision without mutating it. Existing context forms retain
+   * generator notes while all contexts take the same legacy whole-slot step.
+   * Specialization-local escalation is a separate generic-retry concern. */
+  private widenDegradedType(
+    id: number,
+    decision: DegradedType,
+    code = decision.code,
+    reason = decision.reason,
+  ): void {
+    const widened: DegradedType = { ...decision, code, reason, stage: "whole" };
+    const forms = new Map<object, DegradedForm>();
+    for (const [scope, prior] of this.degradedForms.get(decision) ?? [])
+      forms.set(scope, {
+        lenient: DYN,
+        ...(prior.generatorArray ? { generatorArray: prior.generatorArray } : {}),
+      });
+    this.degradedTypes.set(id, widened);
+    this.degradedForms.set(widened, forms);
+  }
+
   /** Degrades a type for a commit point: its lenient (pushed-down) form
    * first; a type already degraded that still fails falls back to the
    * whole-slot checked dynamic. False when nothing is left to degrade. */
@@ -15778,48 +15836,22 @@ export class Lowerer {
     if (id === undefined) return false;
     const known = this.degradedTypes.get(id);
     if (known !== undefined) {
-      if (known.lenient?.kind === "dyn") return false;
-      this.degradedTypes.set(id, {
-        lenient: DYN,
-        code,
-        reason,
-        ...(known.generatorArray ? { generatorArray: known.generatorArray } : {}),
-      });
+      if (this.degradedForm(id, type)?.lenient.kind === "dyn") return false;
+      this.widenDegradedType(id, known, code, reason);
       return true;
     }
-    // Canonical normalization (stage N2): a type the per-form rules miss
-    // maps exactly from its canonical form when that form maps; no dynamic
-    // slot then. Otherwise the lenient (pushed-down) form.
-    const notes: CanonMapNotes = { collapsedToDynamic: false };
-    const mapped = this.canonicalType(type, notes);
-    // A form that maps but for an array of generators: the array has no
-    // storage, so the slot takes the lenient form, where the array is a
-    // checked-dynamic value. A build with a Node island keeps the array
-    // type instead, and with it every refusal of its uses
-    // (generator-arrays.ts).
-    const generatorArray =
-      mapped !== null && notes.generatorArray === true
-        ? { generatorArray: { loc, type: this.checker.typeToString(type) } }
-        : {};
-    const canonical =
-      generatorArray.generatorArray !== undefined && !this.hasNodeIslands() ? null : mapped;
-    if (canonical !== null) {
-      this.degradedTypes.set(id, {
-        lenient: canonical,
-        code,
-        reason,
-        canonical: true,
-        ...generatorArray,
-      });
-      return true;
-    }
-    this.degradedTypes.set(id, {
-      lenient: this.wholeSlotDegradation ? DYN : this.lenientType(type),
-      code,
-      reason,
-      ...generatorArray,
-    });
+    this.degradedTypes.set(id, { stage: "initial", code, reason, loc });
+    this.degradedForm(id, type);
     return true;
+  }
+
+  /** Generator-array notes of the forms observed in this pass. */
+  degradedGeneratorArrays(): { loc: SrcLoc; type: string }[] {
+    const result: { loc: SrcLoc; type: string }[] = [];
+    for (const decision of this.degradedTypes.values())
+      for (const form of this.degradedForms.get(decision)?.values() ?? [])
+        if (form.generatorArray !== undefined) result.push(form.generatorArray);
+    return result;
   }
 
   /** Whether the build runs a package or a module in a Node island, so
@@ -15873,7 +15905,7 @@ export class Lowerer {
   /** The degraded type of `id` maps exactly (canonical form): its slots
    * are static, not dynamic. */
   isCanonicalDegraded(id: number): boolean {
-    return this.degradedTypes.get(id)?.canonical === true;
+    return this.degradedForm(id)?.canonical === true;
   }
 
   /** Some degraded type kept a pushed-down (partial) shape, or one was
@@ -15881,13 +15913,9 @@ export class Lowerer {
    * that shape. */
   hasPartialDegradedTypes(): boolean {
     if (this.partialDegradedTypesMapped) return true;
-    for (const degraded of this.degradedTypes.values())
-      if (
-        degraded.canonical !== true &&
-        degraded.lenient !== null &&
-        degraded.lenient.kind !== "dyn"
-      )
-        return true;
+    for (const decision of this.degradedTypes.values())
+      for (const form of this.degradedForms.get(decision)?.values() ?? [])
+        if (form.canonical !== true && form.lenient.kind !== "dyn") return true;
     return false;
   }
 
@@ -15911,9 +15939,17 @@ export class Lowerer {
     if (this.tierMode !== "auto" || this.diagSink !== null) return false;
     let widened = false;
     for (const id of hits) {
-      const degraded = this.degradedTypes.get(id);
-      if (degraded === undefined || degraded.lenient?.kind === "dyn") continue;
-      degraded.lenient = DYN;
+      const decision = this.degradedTypes.get(id);
+      if (decision === undefined || decision.stage === "whole") continue;
+      this.degradedFormReads++;
+      const forms = this.degradedForms.get(decision);
+      if (
+        ![...(forms?.values() ?? [])].some(
+          (form) => form.canonical !== true && form.lenient.kind !== "dyn",
+        )
+      )
+        continue;
+      this.widenDegradedType(id, decision);
       widened = true;
     }
     return widened;
@@ -20527,7 +20563,7 @@ export class Lowerer {
         id !== undefined &&
         failure.degradable &&
         DECLARATION_SLOTS.has(failure.slot) &&
-        this.degradedTypes.get(id)?.lenient?.kind !== "dyn"
+        this.degradedForm(id, type)?.lenient.kind !== "dyn"
       );
     });
   }
@@ -20568,7 +20604,7 @@ export class Lowerer {
           id !== undefined &&
           failure.degradable &&
           DECLARATION_SLOTS.has(failure.slot) &&
-          this.degradedTypes.get(id)?.lenient?.kind === "dyn"
+          this.degradedForm(id, type)?.lenient.kind === "dyn"
         ) {
           retriable = true;
           slots.push({ loc: diag.loc, failure, code: diag.code, reason: diag.message });
@@ -20580,7 +20616,7 @@ export class Lowerer {
           id === undefined ||
           !failure.degradable ||
           !DECLARATION_SLOTS.has(failure.slot) ||
-          this.degradedTypes.get(id)?.lenient?.kind === "dyn"
+          this.degradedForm(id, type)?.lenient.kind === "dyn"
         )
           return false;
         failing.push({ diag, failure, type });
@@ -20591,22 +20627,10 @@ export class Lowerer {
       for (const { diag, failure, type } of failing) {
         const id = (type as { id?: number }).id ?? -1;
         const prior = this.degradedTypes.get(id);
-        degraded.push({
-          id,
-          prior:
-            prior === undefined
-              ? undefined
-              : {
-                  lenient: prior.lenient,
-                  code: prior.code,
-                  reason: prior.reason,
-                  ...(prior.canonical === true ? { canonical: true as const } : {}),
-                  ...(prior.generatorArray ? { generatorArray: prior.generatorArray } : {}),
-                },
-        });
+        degraded.push({ id, prior });
         this.degradeType(type, diag.code, diag.message, diag.loc);
         const canonical = this.isCanonicalDegraded(id);
-        const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
+        const partial = this.degradedForm(id, type)?.lenient.kind !== "dyn";
         slots.push({
           loc: diag.loc,
           failure,

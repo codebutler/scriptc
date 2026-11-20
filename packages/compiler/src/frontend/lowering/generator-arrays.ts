@@ -46,9 +46,7 @@ import { keyedHelperName } from "./stable-names.js";
  * value to a Node island, and otherwise makes the conversions into
  * generator-typed slots keep a native generator's identity. */
 export function finalizeGeneratorArrays(lowerer: Lowerer, functions: IrFunction[]): void {
-  const slots = [...lowerer.degradedTypes.values()].flatMap((degraded) =>
-    degraded.generatorArray === undefined ? [] : [degraded.generatorArray],
-  );
+  const slots = lowerer.degradedGeneratorArrays();
   if (slots.length === 0) return;
   const islands = lowerer.hasNodeIslands();
   if (islands || lowerer.usesNodeIsland) {

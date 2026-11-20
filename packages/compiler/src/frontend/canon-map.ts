@@ -160,7 +160,19 @@ function mapCanonicalAt(
       return { kind: "union", unionId: ctx.unions.intern(arms) };
     }
     case "obj": {
-      if (c.nominal !== undefined || c.call().length > 0 || c.construct().length > 0)
+      // The shipped ambient interfaces can live outside TypeScript's lib.* files.
+      const ambientInterface = c.src
+        ?.getSymbol()
+        ?.declarations.some(
+          (decl) =>
+            ts.isInterfaceDeclaration(decl) && ctx.isStdlibFile(ts.getSourceFileOfNode(decl)),
+        );
+      if (
+        c.nominal !== undefined ||
+        ambientInterface ||
+        c.call().length > 0 ||
+        c.construct().length > 0
+      )
         return viaChecker();
       if (c.index().length > 0) return viaChecker();
       const props = c.props();
