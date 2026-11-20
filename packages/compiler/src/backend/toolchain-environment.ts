@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 
 /** Environment variables consumed by clang, its linker/subtools, or the
  * platform SDK selection. They are implicit command-line inputs: changing one
@@ -110,5 +111,7 @@ export function toolchainEnvironmentFingerprint(env: NodeJS.ProcessEnv = process
       .update(text)
       .update("\0");
   }
+  const runtimePack = env["SCRIPTC_RUNTIME_PACK"];
+  if (runtimePack !== undefined) hash.update("runtime-pack\0").update(resolve(runtimePack));
   return hash.digest("hex");
 }

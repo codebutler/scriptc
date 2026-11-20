@@ -476,6 +476,22 @@ describe("runtime pack manifests", () => {
     ]);
   });
 
+  test("an explicit runtime pack directory selects and verifies its artifacts", async () => {
+    const { root } = await fixture();
+    const options = {
+      target: MACOS_ARM64_TARGET,
+      features: BASE,
+      optimization: "release" as const,
+      env: { SCRIPTC_RUNTIME_PACK: root },
+      resolver: () => {
+        throw new Error("unexpected package lookup");
+      },
+    };
+    expect((await loadRuntimePack(options)).root).toBe(root);
+    await writeFile(join(root, "artifacts/base.o"), "changed");
+    await expect(loadRuntimePack(options)).rejects.toThrow("hash mismatch");
+  });
+
   test("a stale manifest reports its identity independently from the package", async () => {
     const { packagePath, manifest, root } = await fixture();
     await writeFile(

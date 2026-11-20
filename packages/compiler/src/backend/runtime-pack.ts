@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
@@ -174,7 +174,11 @@ export async function loadRuntimePack(options: {
     options.resolver ?? ((specifier: string) => createRequire(import.meta.url).resolve(specifier));
   let packagePath: string;
   try {
-    packagePath = resolvePackageJson(`${packageName}/package.json`);
+    const explicitRoot = (options.env ?? process.env)["SCRIPTC_RUNTIME_PACK"];
+    packagePath =
+      explicitRoot === undefined
+        ? resolvePackageJson(`${packageName}/package.json`)
+        : resolve(explicitRoot, "package.json");
   } catch {
     throw new RuntimePackError(
       `precompiled runtime package ${packageName} is not installed; reinstall scriptc with optional dependencies enabled for ${options.target.name}`,

@@ -428,6 +428,9 @@ test("the toolchain environment joins cache identities", () => {
   expect(toolchainEnvironmentFingerprint({ ZIG_LIBC: "/libc/one.conf" })).not.toBe(
     toolchainEnvironmentFingerprint({ ZIG_LIBC: "/libc/two.conf" }),
   );
+  expect(toolchainEnvironmentFingerprint({ SCRIPTC_RUNTIME_PACK: "/packs/a" })).not.toBe(
+    toolchainEnvironmentFingerprint({ SCRIPTC_RUNTIME_PACK: "/packs/b" }),
+  );
   // PATH is deliberately absent from this generic environment hash: the
   // resolved executable identity is keyed separately, while the compiler
   // must still resolve on every cache-enabled call.
