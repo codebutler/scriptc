@@ -13,8 +13,8 @@
  * that read one of these values (the frontend marks
  * dyn.builtinMethodValue), so every other executable keeps its exact bytes.
  *
- * The String methods are generic exactly as ECMA-262 22.1.3.32-34 define
- * them: RequireObjectCoercible(this), then ToString(this), then the trim. So
+ * The String methods first require a coercible receiver, then convert it to
+ * a string. codePointAt converts its index after the receiver. For trim,
  * `trim.call(123)` is "123", an object's toString is observed, and a Symbol
  * is the "Cannot convert a Symbol value to a string" TypeError. Null and
  * undefined are the TypeError Node answers, naming the method.
@@ -46,6 +46,7 @@
 #include "scr_runtime.h"
 #include "scr_dyn_methods.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -59,6 +60,7 @@ static const struct {
   uint32_t arity;
   const char *sig;
 } bm_methods[] = {
+  {"String", "codePointAt", 1, "native:String.prototype"},
   {"String", "trim", 0, "native:String.prototype"},
   {"String", "trimStart", 0, "native:String.prototype"},
   {"String", "trimEnd", 0, "native:String.prototype"},
@@ -105,8 +107,9 @@ static void bm_incompatible(const char *owner, const ScrStr *member) {
 }
 
 /** One String method run on its receiver: RequireObjectCoercible, then
- * ToString, then the trim named by `member`. */
-static ScrDyn *bm_string_call(ScrStr *member, ScrDyn *receiver) {
+ * ToString, then the method-specific steps and argument coercions. */
+static ScrDyn *bm_string_call(ScrStr *member, ScrDyn *receiver, ScrDyn *const *args,
+                              size_t argc) {
   if (receiver->kind == SCR_DYN_UNDEF || receiver->kind == SCR_DYN_NULL) {
     char message[80];
     snprintf(message, sizeof message, "String.prototype.%s called on null or undefined",
@@ -116,6 +119,22 @@ static ScrDyn *bm_string_call(ScrStr *member, ScrDyn *receiver) {
   }
   ScrStr *text = scr_dyn_string_coerce_js(receiver);
   if (!text) return NULL;
+  if (!strcmp(member->data, "codePointAt")) {
+    double index = 0;
+    if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &index)) {
+      scr_str_release(text);
+      return NULL;
+    }
+    index = isnan(index) ? 0 : trunc(index);
+    double first = scr_str_char_code_at(text, index);
+    if (first >= 0xd800 && first <= 0xdbff) {
+      double second = scr_str_char_code_at(text, index + 1);
+      if (second >= 0xdc00 && second <= 0xdfff)
+        first = 0x10000 + (first - 0xd800) * 1024 + (second - 0xdc00);
+    }
+    scr_str_release(text);
+    return isnan(first) ? scr_dyn_undefined() : scr_dyn_new_num(first);
+  }
   ScrStr *trimmed = !strcmp(member->data, "trimStart") ? scr_str_trim_start(text)
                     : !strcmp(member->data, "trimEnd") ? scr_str_trim_end(text)
                                                        : scr_str_trim(text);
@@ -249,7 +268,7 @@ static ScrDyn *bm_method_call(ScrClosure *closure, ScrDyn *const *args, size_t a
   ScrStr *member = scr_box_get_ref(closure->caps[1]);
   ScrDyn *receiver = scr_dyn_this_get();
   ScrDyn *result = NULL;
-  if (!strcmp(owner->data, "String")) result = bm_string_call(member, receiver);
+  if (!strcmp(owner->data, "String")) result = bm_string_call(member, receiver, args, argc);
   else if (!strcmp(owner->data, "RegExp")) result = bm_regexp_call(member, receiver, args, argc);
   scr_dyn_release(receiver);
   scr_str_release(owner);

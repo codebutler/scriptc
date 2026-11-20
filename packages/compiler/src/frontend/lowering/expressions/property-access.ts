@@ -273,7 +273,7 @@ import {
   builtinMethodValue,
   builtinPrototypeMethod,
   lowerCheckedPredicateValue,
-  stringTrimMethodName,
+  internedStringMethodName,
 } from "../lower-builtin-values.js";
 import { constructorStaticValue, objectFreezeValue } from "../builtin-statics.js";
 import { lowerBufferPrototypeMember, lowerBufferPrototypeObject } from "../containers/bytes.js";
@@ -3124,14 +3124,15 @@ export function lowerIntrinsicProperty(
   if (primitivePrototype) return primitivePrototype;
   const builtinPrototype = builtinPrototypeMethod(lowerer, expr);
   if (builtinPrototype) {
-    // The trim family and RegExp's methods have a value of their own
+    // These String and RegExp methods have a value of their own
     // (scr_dyn_builtin_methods.c). The invoke unit's table answers a member
     // read on a receiver it already knows; these values have no receiver at
     // read time and brand-check whatever `this` they are later called with,
     // which a receiver-keyed lookup cannot express. The interned value is
     // shared with the `''.trim` and `/a/.exec` spellings below.
-    const trim = builtinPrototype === "String" ? stringTrimMethodName(expr.name.text) : null;
-    if (trim) return builtinMethodValue("String", trim, locOf(expr));
+    const stringMethod =
+      builtinPrototype === "String" ? internedStringMethodName(expr.name.text) : null;
+    if (stringMethod) return builtinMethodValue("String", stringMethod, locOf(expr));
     if (builtinPrototype === "RegExp")
       return builtinMethodValue("RegExp", expr.name.text, locOf(expr));
     return {
@@ -4099,12 +4100,11 @@ export function lowerIntrinsicProperty(
     // runtime's interned function that runs it on its receiver.
     if (kind === "string" && isJsSourceFile(expr.getSourceFile()) && !expr.questionDotToken) {
       const receiver = lowerer.lowerExpr(expr.expression);
-      // `''.trim` is the same interned function as String.prototype.trim, so
-      // its call/apply run the method generically (scr_dyn_builtin_methods.c
-      // rather than the invoke unit's table, which has no trim entry).
-      const trim = stringTrimMethodName(name);
-      const method: IrExpr = trim
-        ? builtinMethodValue("String", trim, locOf(expr))
+      // Reading one of these methods through a string returns the same
+      // function object as reading it through String.prototype.
+      const stringMethod = internedStringMethodName(name);
+      const method: IrExpr = stringMethod
+        ? builtinMethodValue("String", stringMethod, locOf(expr))
         : {
             kind: "libCall",
             fn: "dyn.builtinMethod",

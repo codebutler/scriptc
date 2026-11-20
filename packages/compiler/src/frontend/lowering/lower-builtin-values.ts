@@ -58,6 +58,7 @@ const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
     "toUpperCase",
     "padStart",
     "charCodeAt",
+    "codePointAt",
     "normalize",
     "replace",
     "toString",
@@ -75,12 +76,12 @@ const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   RegExp: ["exec", "test", "toString"],
 };
 
-/** The canonical name of a string trim method read as a value, or null for
- * every other member. Annex B's trimLeft/trimRight are the same function
- * object as trimStart/trimEnd (B.2.3.14-15), so both spellings read the
- * standard one. */
-export function stringTrimMethodName(name: string): string | null {
+/** The canonical name of a string method supplied by the builtin-method
+ * value runtime unit. Annex B makes trimLeft and trimRight aliases of
+ * trimStart and trimEnd respectively. */
+export function internedStringMethodName(name: string): string | null {
   switch (name) {
+    case "codePointAt":
     case "trim":
     case "trimStart":
     case "trimEnd":
