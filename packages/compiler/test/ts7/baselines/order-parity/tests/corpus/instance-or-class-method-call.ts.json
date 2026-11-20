@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/instance-or-class-method-call.ts"
+ ],
+ "diags": []
+}

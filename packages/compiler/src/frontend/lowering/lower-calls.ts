@@ -998,8 +998,10 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const crServed = lowerCreateRequireCall(lowerer, expr, loc);
     if (crServed) return crServed;
   }
-  // `held.load.resolve(request)`: a member of a held loader, called.
   if (ts.isPropertyAccessExpression(expr.expression)) {
+    const selected = lowerInstanceOrClassMethodCall(lowerer, expr, expr.expression);
+    if (selected !== null) return selected;
+    // `held.load.resolve(request)`: a member of a held loader, called.
     const held = heldLoaderMemberThrow(lowerer, expr.expression, expr);
     if (held !== null) return held;
   }
@@ -5103,8 +5105,52 @@ function lowerUnionReceiverMethodCall(
   const union = lowerer.unions.get(value.type.unionId);
   if (!union || !unionArmsDispatchMember(lowerer, union.arms, access)) return null;
   if (!lowerer.dynConvertible(value.type)) return null;
+  return boxedReceiverMethodCall(lowerer, call, access, lowerer.coerceToExpected(value, DYN));
+}
+
+/** An instance defaulted to a structurally compatible constructor can lose
+ * the constructor arm in the checker. Select the runtime receiver before
+ * looking up its method, then evaluate the arguments and call it with that receiver. */
+function lowerInstanceOrClassMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const source = withoutParentheses(access.expression);
+  if (
+    !ts.isBinaryExpression(source) ||
+    source.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken ||
+    access.questionDotToken ||
+    call.questionDotToken ||
+    call.arguments.nodes.some(ts.isSpreadElement) ||
+    lowerer.mapTypeOf(lowerer.typeOf(source.right))?.kind !== "classval"
+  )
+    return null;
+  const left = tryLowerExpression(lowerer, source.left);
+  if (left?.type.kind !== "union" || !lowerer.dynConvertible(left.type)) return null;
+  const arms = lowerer.unions.get(left.type.unionId)?.arms;
+  if (
+    !arms?.some(isUnitType) ||
+    !arms.some((arm) => arm.kind === "object") ||
+    !arms.every((arm) => isUnitType(arm) || arm.kind === "object")
+  )
+    return null;
+  return boxedReceiverMethodCall(lowerer, call, access, {
+    kind: "nullish",
+    left: lowerer.coerceToExpected(left, DYN),
+    right: lowerer.lowerExprExpecting(source.right, DYN),
+    type: DYN,
+    loc: locOf(source),
+  });
+}
+
+function boxedReceiverMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  boxed: IrExpr,
+): IrExpr {
   const loc = locOf(call);
-  const boxed = lowerer.coerceToExpected(value, DYN);
   const local = lowerer.declareHiddenLocal("%unionReceiver", DYN);
   const receiver: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
   const member: IrExpr = {
