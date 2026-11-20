@@ -1123,6 +1123,9 @@ export function lowerPropertyAccessExpr(
   if (!expr.questionDotToken && isOptionalChainTail(lowerer, expr)) {
     return lowerer.lowerOptionalChain(expr);
   }
+  const group = lowerRuntimeMatchGroupMember(lowerer, expr);
+  if (group) return group;
+
   // Known Web handles retain their declared surface even when their
   // storage uses checked values. Apply this before generic reads.
   lowerer.fenceStaticAbortControllerMemberRead(expr);
@@ -4421,6 +4424,43 @@ function matchProducerRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression
 /** Array methods that return one row of the receiver. */
 const MATCH_ROW_PICK_METHODS = new Set(["find", "findLast", "at"]);
 
+/** A key of runtime-discovered capture groups may be missing or unmatched.
+ * Read the dictionary itself without forcing the checker's string result. */
+export function lowerRuntimeMatchGroupMember(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): IrExpr | null {
+  let groups = expr.expression;
+  while (ts.isParenthesizedExpression(groups)) groups = groups.expression;
+  if (
+    !ts.isPropertyAccessExpression(groups) ||
+    groups.name.text !== "groups" ||
+    !lowerer.isStdlibMember(groups) ||
+    isJsSourceFile(ts.getSourceFileOfNode(groups))
+  )
+    return null;
+  const row = lowerer.mapTypeOf(lowerer.typeOf(groups.expression));
+  if (
+    !row ||
+    !isMatchSliceType(lowerer, row) ||
+    matchResultNamedGroupsOf(lowerer, groups.expression) !== null
+  )
+    return null;
+  const receiver = lowerer.lowerExpr(expr.expression);
+  if (receiver.type.kind !== "dyn") return null;
+  const loc = locOf(expr);
+  const key = ts.isElementAccessExpression(expr)
+    ? lowerer.lowerExpr(expr.argumentExpression)
+    : strLit(expr.name.text, loc);
+  return {
+    kind: "dynKeyGet",
+    value: receiver,
+    key: lowerer.coerceToExpected(key, DYN),
+    type: DYN,
+    loc,
+  };
+}
+
 /** `m.groups` on a match result whose producing regex is statically
  * known: the honest slice already HOLDS every named group's value at
  * its capture index, so the groups object is a compile-time record
@@ -4452,11 +4492,38 @@ function lowerMatchGroupsRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressio
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (!recvT || !isMatchSliceType(lowerer, recvT) || !lowerer.isStdlibMember(expr)) return null;
   const groups = matchResultNamedGroupsOf(lowerer, expr.expression);
-  // An untraced regex: TypeScript reaches the member fence; JavaScript
-  // would otherwise read the slice's absent expando as undefined.
+  // JavaScript would otherwise read an untraced slice's absent expando.
   if (groups === null && isJsSourceFile(ts.getSourceFileOfNode(expr)))
     lowerer.stdlibMemberFence(expr);
-  if (groups === null) return null;
+  if (groups === null) {
+    // A typed match parameter can receive rows from many patterns. Read the
+    // row's own metadata for a presence test or an immediate key lookup.
+    // Escaping the groups object needs a live dictionary view; converting
+    // it to a standalone typed record would lose alias identity.
+    let use: ts.Expression = expr;
+    while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+    const parent = use.parent;
+    const member =
+      (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+      parent.expression === use;
+    const presence =
+      ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent)
+        ? parent.expression === use
+        : ts.isConditionalExpression(parent) || ts.isForStatement(parent)
+          ? parent.condition === use
+          : ts.isPrefixUnaryExpression(parent) &&
+            parent.operator === ts.SyntaxKind.ExclamationToken;
+    if (!member && !presence) return null;
+    const row = lowerer.lowerExpr(expr.expression);
+    if (!typeEquals(row.type, strArr)) return null;
+    return {
+      kind: "libCall",
+      fn: "regex.resultProp",
+      args: [row, strLit("groups", loc)],
+      type: DYN,
+      loc,
+    };
+  }
   if (groups.length === 0) {
     // Node: a match result of a group-less regex answers undefined —
     // the unit literal, exactly the `undefined` identifier's lowering.

@@ -85,6 +85,7 @@ import {
   classFieldTarget,
   erasedDeclareField,
   lowerUnionKeyedRead,
+  lowerRuntimeMatchGroupMember,
 } from "./property-access.js";
 import {
   assertedOnlyMemberWrite,
@@ -213,6 +214,9 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   if (!expr.questionDotToken && isOptionalChainTail(lowerer, expr)) {
     return lowerer.lowerOptionalChain(expr);
   }
+  const group = lowerRuntimeMatchGroupMember(lowerer, expr);
+  if (group) return group;
+
   // A PRESENCE PROBE of a member read through an erased assertion in the
   // bracket spelling (`typeof (u as R)["member"]`, `(u as R)["member"] !==
   // undefined`): the dot spelling's twin. Node reads the member off the
