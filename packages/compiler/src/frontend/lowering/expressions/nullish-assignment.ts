@@ -364,7 +364,25 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
   const value = rhs ?? lowerer.lowerExprExpecting(expr.right, storage);
   const assigned = lowerer.declareHiddenLocal("%shortCircuitValue", value.type);
   const ref = varRef(assigned.id, value.type, loc);
-  const result = lowerer.coerceInto(expr.right, ref, read.type);
+  // A nullish assignment keeps the present left value or yields the RHS,
+  // even if the setter subsequently changes the slot. When that RHS was
+  // wrapped for storage and both paths select the same present arm, return
+  // that arm so a following method call sees its actual receiver.
+  const assignedArm =
+    value.kind === "unionWrap" ? lowerer.unions.get(value.unionId)?.arms[value.tag] : undefined;
+  const resultType =
+    nullish &&
+    assignedArm &&
+    !isUnitType(assignedArm) &&
+    assignedArm.kind !== "dyn" &&
+    read.type.kind === "union" &&
+    typeEquals(value.type, read.type) &&
+    lowerer.unions
+      .get(read.type.unionId)
+      ?.arms.every((arm) => isUnitType(arm) || typeEquals(arm, assignedArm))
+      ? assignedArm
+      : read.type;
+  const result = lowerer.coerceInto(expr.right, ref, resultType);
   const right: IrExpr = {
     kind: "seqExpr",
     stmts: [{ kind: "varDecl", localId: assigned.id, init: value, loc }, write(ref)],
@@ -391,7 +409,7 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
     prefix.push({ kind: "exprStmt", expr: read, loc });
     return finish(right);
   }
-  return finish({ kind: "nullish", left: read, right, type: read.type, loc });
+  return finish({ kind: "nullish", left: read, right, type: resultType, loc });
 }
 
 /** The value type of a pure index-signature record shape (no declared
