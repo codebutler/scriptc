@@ -2005,6 +2005,8 @@ const RUNTIME_FEATURE_RULES = {
     scan: computedBufferMemberScan,
     fns: [
       ...DYN_INVOKE_LIB_FNS,
+      // The class-test prototype walk reads the shared Function.prototype.
+      "dyn.classTestPrototype",
       ...UTIL_CALLABLE_LIB_FNS,
       ...BUILTIN_CLASS_LIB_FNS,
       "util.promisifyDyn",

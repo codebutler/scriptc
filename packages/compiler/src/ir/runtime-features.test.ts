@@ -316,6 +316,12 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(mod).dynAsync).toBe(false);
   });
 
+  test("the class prototype walk links the shared Function.prototype", () => {
+    const mod = module();
+    mod.functions[0]!.body.push(call("dyn.classTestPrototype"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({ classTestPrototype: true, dynInvoke: true });
+  });
+
   test("the any-object descriptor entry points link the dyn-invoke unit", () => {
     for (const fn of [
       "dyn.definePropertyShapes",
