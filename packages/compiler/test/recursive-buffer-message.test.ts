@@ -26,8 +26,13 @@ test.each([
       export {};
     `,
     );
-    const result = await compile(entry, { outputKind: "ir", outDir: dir });
+    const result = await compile(entry, {
+      outputKind: "ir",
+      outDir: dir,
+      outPath: join(dir, "program.ir.json"),
+    });
     expect(result.ok).toBe(false);
+    if (result.ok) return;
     expect(result.diagnostics).toContainEqual(
       expect.objectContaining({
         code: "SC2009",
