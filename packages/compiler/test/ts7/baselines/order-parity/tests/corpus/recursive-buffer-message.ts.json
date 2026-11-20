@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/recursive-buffer-message.ts"
+ ],
+ "diags": []
+}

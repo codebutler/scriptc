@@ -8013,6 +8013,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // allSettled) maps an array input to `X[] | []`: the empty tuple is
       // one of the array's own values.
       const parts = ts.constituentTypes(widened);
+      if (recursiveBufferValue(widened, parts, ctx)) return DYN;
       const emptyTuple = (part: ts.Type): boolean =>
         checker.isTupleType(part) &&
         checker.getTypeArguments(part as ts.TypeReference).length === 0;
@@ -12506,6 +12507,56 @@ const STDLIB_CONTAINERS: Record<string, { role: (i: number) => string }> = {
   Generator: { role: (i) => ["yield", "return", "next"][i] ?? "channel" },
   AsyncGenerator: { role: (i) => ["yield", "return", "next"][i] ?? "channel" },
 };
+
+/** Buffers use checked-dynamic storage. When the other arms are scalars
+ * and containers of this same union, that storage can hold the entire
+ * graph, including cycles, without an unfinished recursive union tag. */
+function recursiveBufferValue(
+  type: ts.Type,
+  parts: readonly ts.Type[],
+  ctx: TypeMapperCtx,
+): boolean {
+  const { checker } = ctx;
+  const isBuffer = (part: ts.Type): boolean => {
+    const symbol = part.getSymbol();
+    return symbol?.escapedName === "ArrayBuffer" && provenanceOf(symbol, ctx).stdlibInterface;
+  };
+  if (!parts.some(isBuffer)) return false;
+  // The outer union has already been widened. Array elements and dictionary
+  // values still refer to the original alias in the checker.
+  const refersToUnion = (part: ts.Type | undefined): boolean =>
+    part !== undefined && checker.getBaseTypeOfLiteralType(part) === type;
+  let hasRecursiveContainer = false;
+  for (const part of parts) {
+    if (
+      part.flags &
+        (ts.TypeFlags.Null |
+          ts.TypeFlags.Undefined |
+          ts.TypeFlags.BooleanLike |
+          ts.TypeFlags.NumberLike |
+          ts.TypeFlags.StringLike) ||
+      isBuffer(part)
+    )
+      continue;
+    if (checker.isArrayType(part)) {
+      if (!refersToUnion(checker.getTypeArguments(part as ts.TypeReference)[0])) return false;
+    } else {
+      const indexes = checker.getIndexInfosOfType(part);
+      if (
+        ((part.getSymbol()?.flags ?? 0) & ts.SymbolFlags.Class) !== 0 ||
+        indexes.length !== 1 ||
+        indexes[0]!.keyType.flags !== ts.TypeFlags.String ||
+        !refersToUnion(indexes[0]!.type) ||
+        checker.getPropertiesOfType(part).length > 0 ||
+        checker.getCallSignatures(part).length > 0 ||
+        checker.getConstructSignatures(part).length > 0
+      )
+        return false;
+    }
+    hasRecursiveContainer = true;
+  }
+  return hasRecursiveContainer;
+}
 
 /** The `string | object`-family collapse domain (mapTypeInner's union
  * rule): arms the checked-dynamic representation holds FAITHFULLY, so a
