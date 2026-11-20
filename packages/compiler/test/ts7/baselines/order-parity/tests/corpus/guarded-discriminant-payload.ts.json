@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/guarded-discriminant-payload.ts"
+ ],
+ "diags": []
+}

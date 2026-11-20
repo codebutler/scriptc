@@ -429,6 +429,19 @@ describe("union conversion planning", () => {
     expect(f.plan()).toBeNull();
   });
 
+  test("a guard can exclude a layout whose discriminant needs an incompatible payload", () => {
+    const f = fixture();
+    f.from.arms[0] = record("r1");
+    expect(f.plan()).toBeNull();
+    expect(f.plan(new Set([0]))![0]).toEqual({ kind: "trap" });
+    expect(f.plan(new Set([1]))).toBeNull();
+    f.from.discriminant!.cases[0]!.values.splice(1);
+    expect(f.plan(new Set([0]))![0]).toEqual({
+      kind: "direct",
+      route: { tag: 0, lift: { how: "copy" }, values: ["left"] },
+    });
+  });
+
   test("does not plan a width helper for a record the checker proved absent", () => {
     const f = fixture();
     let calls = 0;

@@ -256,7 +256,10 @@ export function planUnionRetag(
         }
         const lift = widthLift(source, to.arms[destination]!);
         if (lift === null) {
-          if (!strandUnrouted || destinationAccepts(source)) return null;
+          // A shared storage layout can name a different semantic variant
+          // in each union. A guard can exclude this entire source tag even
+          // when its layout also occurs in the destination.
+          if (!trappable?.has(tag) && (!strandUnrouted || destinationAccepts(source))) return null;
           stranded = true;
           break;
         }
