@@ -127,7 +127,7 @@ for (const mode of ["call", "value"] as const) {
       const entry = join(dir, "main.ts");
       writeFileSync(
         entry,
-        `class Base{#offset(){return 1;}base(){return this.#offset();}}class Derived extends Base{#offset():number{return Object.entries({get x(){return 1;}}).length;}own(){return this.#offset${mode === "call" ? "()" : ""};}}console.log(new Derived().own());`,
+        `class Base{#offset(){return 1;}base(){return this.#offset();}}class Derived extends Base{#offset():number{return Object.entries({set x(value:number){void value;}}).length;}own(){return this.#offset${mode === "call" ? "()" : ""};}}console.log(new Derived().own());`,
       );
       const result = await compile(entry, {
         outputKind: "ir",

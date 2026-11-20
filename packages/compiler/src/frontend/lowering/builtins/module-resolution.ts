@@ -1,5 +1,7 @@
 import { dynUndefinedExpr, nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
 import { dirname, isAbsolute, resolve } from "node:path";
+import * as posix from "node:path/posix";
+import * as win32 from "node:path/win32";
 import * as ts from "../../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
@@ -13,6 +15,7 @@ import {
   requireResolvePathsRuntime,
   resolveImportMetaRuntime,
   resolveRequireRuntime,
+  runtimePathForTarget,
   type RuntimeResolveError,
   type RuntimeResolveResult,
 } from "../../runtime-resolve.js";
@@ -25,7 +28,13 @@ import {
 } from "../../../diagnostics/diagnostic.js";
 import { NODE_BUILTIN_MODULES_V24 } from "../../builtin-modules.js";
 import { builtinModulesArrayLit } from "../surfaces.js";
-import { moduleFileName } from "../import-meta.js";
+import { isImportMeta, moduleFileName } from "../import-meta.js";
+import {
+  baseHrefOfPath,
+  baseUrlLiteral,
+  findPackageJson,
+  findPackageJsonPathsMatchHost,
+} from "../../find-package-json.js";
 import {
   BOOL,
   DYN,
@@ -120,6 +129,84 @@ function lowerCompileCacheCall(
   return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 
+/** `module.findPackageJSON(specifier[, base])` with a string-literal
+ * specifier and a static base (`import.meta.url`, `__filename`, or a path or
+ * file: URL literal): the nearest package.json resolved at build time, which
+ * is the answer Node gives for the same source tree. A runtime-computed
+ * specifier or base, and a lookup that fails, keep the named refusal. */
+function lowerFindPackageJsonCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = expr.arguments.nodes;
+  if (args.some(ts.isSpreadElement) || args.length === 0 || args.length > 2) {
+    lowerer.noLowering(
+      "module.findPackageJSON with this argument list",
+      expr,
+      "pass a string-literal specifier and an optional static base",
+    );
+  }
+  const specifierNode = withoutParenthesesTypeWrappers(args[0]!);
+  if (!ts.isStringLiteralLike(specifierNode)) {
+    lowerer.noLowering(
+      "module.findPackageJSON with a runtime-computed specifier",
+      args[0]!,
+      "a compiled binary has a fixed module graph; pass a string literal",
+    );
+  }
+  let baseHref = "data:";
+  if (args.length === 2) {
+    const base = findPackageJsonBaseHref(lowerer, args[1]!);
+    if (base === null) {
+      lowerer.noLowering(
+        "module.findPackageJSON with a runtime-computed base",
+        args[1]!,
+        "pass import.meta.url, __filename, or an absolute path or file: URL literal",
+      );
+    }
+    baseHref = base;
+  }
+  if (!findPackageJsonPathsMatchHost(lowerer.targetPlatform)) {
+    lowerer.noLowering(
+      "module.findPackageJSON for this target",
+      expr,
+      "the build resolves the lookup with the host's path rules; this target's differ",
+    );
+  }
+  const answer = findPackageJson(specifierNode.text, baseHref);
+  if (!answer.ok) {
+    lowerer.noLowering(
+      `module.findPackageJSON(${JSON.stringify(specifierNode.text)}): ${answer.refusal}`,
+      expr,
+      "the build-time lookup cannot answer this call",
+    );
+  }
+  const lit: IrExpr = { kind: "strLit", value: answer.path, type: STRING, loc };
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  return declared === null ? lit : lowerer.coerceToExpected(lit, declared);
+}
+
+/** The file: URL a findPackageJSON base expression names, or null when it is
+ * not one of the static spellings. */
+function findPackageJsonBaseHref(lowerer: Lowerer, node: ts.Expression): string | null {
+  const value = withoutParenthesesTypeWrappers(node);
+  if (ts.isStringLiteralLike(value)) return baseUrlLiteral(value.text);
+  const sf = ts.getSourceFileOfNode(value);
+  if (
+    ts.isPropertyAccessExpression(value) &&
+    !value.questionDotToken &&
+    value.name.text === "url" &&
+    isImportMeta(value.expression)
+  ) {
+    return baseHrefOfPath(moduleFileName(lowerer, sf));
+  }
+  if (
+    ts.isIdentifier(value) &&
+    value.text === "__filename" &&
+    !isNodeEsmFile(sf, lowerer.program)
+  ) {
+    return baseHrefOfPath(moduleFileName(lowerer, sf));
+  }
+  return null;
+}
+
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
  * string against the pinned Node 24 list (bare builtins also accept their
  * node: spelling; prefix-only entries do not gain a bare alias).
@@ -137,6 +224,7 @@ export function lowerNodeModuleCall(
   if (Object.hasOwn(COMPILE_CACHE_CALLS, bi.member)) {
     return lowerCompileCacheCall(lowerer, expr, bi.member as CompileCacheMember, loc);
   }
+  if (bi.member === "findPackageJSON") return lowerFindPackageJsonCall(lowerer, expr, loc);
   if (bi.member === "syncBuiltinESMExports") {
     if (expr.arguments.nodes.length !== 0 || expr.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(
@@ -1048,7 +1136,34 @@ function requireResolverBaseFile(lowerer: Lowerer, receiver: ts.Expression): ts.
     : null;
 }
 
+/** One entry of `{ paths: [...] }`: a string literal, or `__dirname` in a
+ * CommonJS file (the containing file's own directory, the same build-time
+ * value the binding answers). */
+function staticResolveOptionPathEntry(lowerer: Lowerer, node: ts.Expression): string | null {
+  if (ts.isStringLiteralLike(node)) return node.text;
+  const value = withoutParenthesesTypeWrappers(node);
+  if (
+    ts.isIdentifier(value) &&
+    value.text === "__dirname" &&
+    lowerer.isStdlibGlobal(value, "__dirname") &&
+    !isNodeEsmFile(ts.getSourceFileOfNode(value), lowerer.program)
+  ) {
+    const source = ts.getSourceFileOfNode(value).fileName;
+    // Build-time resolution reads HOST paths (the base file is one). A WASI
+    // guest path would send the resolver to a directory that does not exist
+    // on the build host; the guest form belongs to the emitted value, not to
+    // this lookup.
+    const file =
+      lowerer.targetPlatform === "wasi"
+        ? source
+        : runtimePathForTarget(source, lowerer.targetPlatform);
+    return lowerer.targetPlatform === "win32" ? win32.dirname(file) : posix.dirname(file);
+  }
+  return null;
+}
+
 function staticResolveOptionPaths(
+  lowerer: Lowerer,
   node: ts.Expression | undefined,
 ): readonly string[] | undefined | null {
   if (node === undefined) return undefined;
@@ -1065,8 +1180,9 @@ function staticResolveOptionPaths(
     if (!ts.isArrayLiteralExpression(init)) return null;
     const entries: string[] = [];
     for (const item of init.elements.nodes) {
-      if (!ts.isStringLiteralLike(item)) return null;
-      entries.push(item.text);
+      const entry = staticResolveOptionPathEntry(lowerer, item);
+      if (entry === null) return null;
+      entries.push(entry);
     }
     paths = entries;
   }
@@ -1180,7 +1296,7 @@ export function lowerRequireResolveCall(
   // A computed request (or options) through a createRequire loader in
   // JavaScript source resolves at run time.
   if (
-    (specifier === null || staticResolveOptionPaths(call.arguments.nodes[1]) === null) &&
+    (specifier === null || staticResolveOptionPaths(lowerer, call.arguments.nodes[1]) === null) &&
     !pathsCall &&
     createRequireCalleeFileOf(lowerer, receiver) !== null &&
     isJsSourceFile(ts.getSourceFileOfNode(call))
@@ -1233,7 +1349,7 @@ export function lowerRequireResolveCall(
           };
     return lowerer.coerceInto(call, raw, lowerer.irTypeOf(call));
   }
-  const paths = staticResolveOptionPaths(call.arguments.nodes[1]);
+  const paths = staticResolveOptionPaths(lowerer, call.arguments.nodes[1]);
   if (paths === null) {
     const fenced = deferred(
       "with runtime-computed options",

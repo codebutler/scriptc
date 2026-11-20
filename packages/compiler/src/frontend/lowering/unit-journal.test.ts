@@ -44,6 +44,9 @@ const sized: Record<string, readonly string[]> = {
     "recIds",
     "pendingRec",
     "extendedNames",
+    "journalLog",
+    "journalBorn",
+    "journalChanges",
   ],
   unions: ["keyedNameKeys", "byKey", "byId", "armTags", "unions", "recIds", "pendingRec"],
   keyOrder: [
@@ -60,6 +63,9 @@ const sized: Record<string, readonly string[]> = {
     "changed",
     "keptSourceShapes",
     "warnings",
+    "journalLog",
+    "journalWhy",
+    "pendingAttach",
   ],
 };
 

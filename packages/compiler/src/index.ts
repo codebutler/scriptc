@@ -199,9 +199,11 @@ import {
 import { clearResolveCaches } from "./frontend/resolve.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
 import { carriesDebugSources, executableLinkFeatures } from "./backend/executable-features.js";
+import { sourceTextLoader } from "./backend/source-text-loader.js";
 import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { heapCensusRequested } from "./backend/llvm/heap-census.js";
 import { debugJsIcWays } from "./backend/llvm/js-ic.js";
+import { invalidIrSourceLoc } from "./backend/llvm/invalid-ir-loc.js";
 import { dynIndexFastpath } from "./ir/js-ic.js";
 import { representationReportPath } from "./backend/llvm/repr-report.js";
 import {
@@ -860,6 +862,7 @@ async function compileExecutableNative(
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
     ...(features.stdioObject ? { stdioObject: true } : {}),
     ...(features.ttyColors ? { ttyColors: true } : {}),
+    ...(features.consoleOptions ? { consoleOptions: true } : {}),
     ...(features.streamPipeEvents ? { streamPipeEvents: true } : {}),
     ...(features.fsStreamSignal ? { fsStreamSignal: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
@@ -904,8 +907,10 @@ async function compileExecutableNative(
     ...(features.arrJoinStr ? { arrJoinStr: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
+    ...(features.sqlite ? { sqlite: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
+    ...(features.fsWebStream ? { fsWebStream: true } : {}),
     // The C-source link (a sanitized build) compiles the runtime itself, so it
     // needs the same Blob/File body define the runtime pack selects.
     ...(features.webBodies ? { webBodies: true } : {}),
@@ -946,6 +951,7 @@ async function compileExecutableNative(
     textCodecDyn: features.textCodecDyn,
     watch: features.watch,
     watchFile: features.watchFile,
+    watchEvents: features.watchEvents,
     foreignFfi: features.foreignFfi,
     ...(features.workers ? { workers: true } : {}),
     ...(features.youngNursery ? { youngNursery: true } : {}),
@@ -955,6 +961,8 @@ async function compileExecutableNative(
     cipher: features.cipher,
     ecdh: features.ecdh,
     dh: features.dh,
+    argon2: features.argon2 || features.webcrypto,
+    mlkem: features.mlkem,
     pki: features.pki,
     ed25519: features.ed25519,
     x509: features.x509,
@@ -1336,6 +1344,8 @@ async function prepareExecutableInput(
       llvm = emitLlvmModuleSource(mod, {
         targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
         ...debugOptions,
+        positionSources: sourceTexts,
+        ...(opts.fromLowered === undefined ? {} : { positionSourceLoader: sourceTextLoader() }),
         ...traceOptions,
         ...(await readFunctionLayout(opts)),
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
@@ -1376,9 +1386,14 @@ async function prepareExecutableInput(
         });
       } catch (err) {
         if (!(err instanceof NativeCodegenError)) throw err;
+        // The helper reports the emitted IR it rejected. When its message
+        // quotes a slot, name the construct whose lowering wrote it instead
+        // of pointing at the entry (1:1).
+        const diag = nativeCodegenDiag(err.diagnosticCode, err.message, entryPath);
+        const loc = invalidIrSourceLoc(mod, err.message);
         return {
           ok: false,
-          diagnostics: [nativeCodegenDiag(err.diagnosticCode, err.message, entryPath)],
+          diagnostics: [loc === null ? diag : { ...diag, loc }],
           sourceTexts,
         };
       }
@@ -1425,6 +1440,8 @@ async function prepareExecutableInput(
     llvmSource = emitLlvmModuleSource(mod, {
       targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
       ...debugOptions,
+      positionSources: sourceTexts,
+      ...(opts.fromLowered === undefined ? {} : { positionSourceLoader: sourceTextLoader() }),
       ...traceOptions,
       ...(await readFunctionLayout(opts)),
       pointerBits: buildPlatform === "wasi" ? 32 : 64,

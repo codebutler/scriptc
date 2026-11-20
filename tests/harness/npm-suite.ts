@@ -48,7 +48,6 @@ const KNOWN: Record<string, Known> = {
   // `strict.strict === strict` compares the assert module's `strict` member,
   // a function value with no lowering, with the module itself.
   "assert-shims": { run: "SC1100" },
-  "buffer-shims": { run: "SC2020" },
   "bytes-exit": { island: true },
   // chalk 4 compiles natively; the colour models convert through
   // color-convert, required inside a function of ansi-styles and shipped
@@ -56,8 +55,6 @@ const KNOWN: Record<string, Known> = {
   chalk4: { island: true },
   "cjs-esm-named": { island: true },
   "cjs-lexer-aligned": { island: true },
-  "commander-calc": { run: "SC1090", argvs: [["--help"]] },
-  "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
   "create-require": { run: "SC1090" },
   "dotfolder": { island: true },
   "dual-package-kinds": { island: true },
@@ -92,7 +89,9 @@ const KNOWN: Record<string, Known> = {
   "node24-commonjs-metadata": { island: true },
   "node24-deep-equality": { run: "SC2020" },
   "node24-diagnostics-async": { run: "SC1090" },
-  "node24-diagnostics-tracing": { run: "SC1090" },
+  // Symbol channel names and the Channel value read now run; the program
+  // stops at the constructor of TracingChannel's collection members.
+  "node24-diagnostics-tracing": { run: "SC2020" },
   "node24-esm-metadata": { island: true },
   "node24-event-emitter": { run: "SC2020" },
   "node24-file-url-conversion": { island: true },

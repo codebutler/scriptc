@@ -5,6 +5,7 @@ import { CRYPTO_CONSTANTS } from "./lowering/crypto-tables.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
+import { isFallbackDtsPath } from "./dts-paths.js";
 import type { EnumObjectEntry } from "./enum-object-layout.js";
 import type {
   IrRecordField,
@@ -59,6 +60,7 @@ import {
 import {
   BIGINT_T,
   KEY_ORDER_FIELD,
+  PERF_ENTRY_JSON_FIELDS,
   PERF_ENTRY_MARKER,
   PERF_NODE_TIMING_JSON_FIELDS,
   PERF_NODE_TIMING_MARKER,
@@ -252,6 +254,7 @@ export const FETCH_AMBIENT_TYPES = [
   "Event",
   "CustomEvent",
   "MessageEvent",
+  "CloseEvent",
   "EventTarget",
   "AddEventListenerOptions",
   "EventListenerOptions",
@@ -308,6 +311,8 @@ export const CIPHER_TYPE_NAMES: ReadonlySet<string> = new Set([
  * accessor) and the DebugLoggerFunction its callback receives. Values
  * behind this surface use the checked-dynamic tree; see mapTypeInner. */
 const PARSE_ARGS_DYN_TYPES = new Set([
+  "CallSiteObject",
+  "GetCallSitesOptions",
   "DebugLogger",
   "DebugLoggerFunction",
   "ParseArgsConfig",
@@ -355,6 +360,63 @@ function comparePriority(left: DeclaredOrderPriority, right: DeclaredOrderPriori
   return 0;
 }
 
+/** One change a unit made to the shape registry (ShapeRegistry.journalTable):
+ * the field list a unit interned under its declared-order rank, the declared
+ * order it offered an interned shape, the accessor order it adopted, or the
+ * members it attached (extendShape). */
+type ShapeJournalOp =
+  | {
+      readonly k: "intern";
+      readonly id: string;
+      readonly key: string;
+      readonly fields: IrRecordField[];
+      readonly tuple: boolean;
+      readonly indexValue: IrType | null;
+      readonly declaredOrder: string[] | null;
+      readonly priority: readonly number[];
+    }
+  | {
+      readonly k: "declare";
+      readonly id: string;
+      readonly order: string[];
+      readonly priority: readonly number[];
+      readonly previousOrder: string[] | null;
+      readonly previousPriority: readonly number[] | null;
+    }
+  | { readonly k: "accessor"; readonly id: string; readonly order: string[] }
+  | {
+      readonly k: "extend";
+      readonly id: string;
+      readonly fields: readonly { readonly name: string; readonly type: IrType }[];
+    };
+
+/** Whether every number `value` holds survives JSON (finite). */
+function finiteNumbers(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(finiteNumbers);
+  if (value !== null && typeof value === "object")
+    return Object.values(value as Record<string, unknown>).every(finiteNumbers);
+  return true;
+}
+
+/** Whether two key orders are the same list. */
+function sameOrder(
+  left: readonly (string | number)[] | undefined,
+  right: readonly (string | number)[] | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.length === right.length && left.every((name, index) => name === right[index]);
+}
+
+/** Whether two declared-order ranks are the same. */
+function samePriority(
+  left: DeclaredOrderPriority | undefined,
+  right: DeclaredOrderPriority | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return sameOrder(priorityRank(left), priorityRank(right));
+}
+
 /** The frontend's record-shape interner. Records are monomorphic structural
  * shapes: fields sorted by name form the canonical identity, and two types
  * with the same canonical field list share one shapeId (and later one C
@@ -394,25 +456,272 @@ export class ShapeRegistry {
   private extendedCount = 0;
   /** All interned shapes in first-seen order. */
   readonly shapes: IrRecordShape[] = [];
+  /** Whether unit recording is on, which keeps the journal (journalTable)
+   * and leaves builds that record nothing as they were. */
+  journaling = false;
+  /** Each change a unit made to the registry, in the order it made it, with
+   * the op it encodes as and the undo that takes it out again
+   * (journalTable). */
+  private readonly journalLog: { encode: () => ShapeJournalOp | null; undo: () => void }[] = [];
+  /** The journal position at which each shape was interned. */
+  private readonly journalBorn = new Map<string, number>();
+  /** The journal positions of each shape's changes, newest last. */
+  private readonly journalChanges = new Map<string, number[]>();
 
-  /** The sizes of the registry's tables, which only grow while shapes are
-   * interned (unit-journal.ts). */
-  journalSizes(): number[] {
-    return [
-      this.revision,
-      this.shapes.length,
-      this.byKey.size,
-      this.byId.size,
-      this.keyedNameKeys.size,
-      this.declaredOrderPriority.size,
-      this.declaredOrderCandidates.size,
-      this.candidateCount,
-      this.derivedDeclaredOrderFinalizers.length,
-      this.recIds.size,
-      this.pendingRec.size,
-      this.extendedNames.size,
-      this.extendedCount,
-    ];
+  /** The interned shapes as a table a unit's record carries
+   * (unit-journal.ts). An entry is one change the unit made, in the order it
+   * made it: a field list it interned under the unit's declared-order rank,
+   * a declared order it offered an interned shape, the accessor order it
+   * adopted, or the members it attached (extendShape). Shape ids are hashes
+   * of the interned key, so applying the entries interns the same shapes
+   * under the same ids; each entry carries what its change was made on, so
+   * applying it after the same earlier units gives the same registry. */
+  journalTable(): JournalTable {
+    // The position of each shape by id, for the shapes indexed so far.
+    let indexes = new Map<string, number>();
+    let indexed = 0;
+    const indexOf = (id: string): number | undefined => {
+      if (indexed > this.shapes.length) {
+        indexes = new Map();
+        indexed = 0;
+      }
+      for (; indexed < this.shapes.length; indexed++)
+        indexes.set(this.shapes[indexed]!.id, indexed);
+      const index = indexes.get(id);
+      return index !== undefined && this.shapes[index]?.id === id ? index : undefined;
+    };
+    const encode = (entry: { encode: () => ShapeJournalOp | null }): string | null => {
+      let op: ShapeJournalOp | null;
+      try {
+        op = entry.encode();
+      } catch {
+        return null;
+      }
+      if (op === null || !finiteNumbers(op)) return null;
+      try {
+        return JSON.stringify(op);
+      } catch {
+        return null;
+      }
+    };
+    return {
+      name: "shapes",
+      size: () => this.journalLog.length,
+      digest: (key, before) => {
+        const shape = this.byId.get(key);
+        if (shape === undefined || indexOf(key) === undefined) return null;
+        const born = this.journalBorn.get(key);
+        if (born !== undefined && born >= before) return null;
+        // A shape the unit changed itself is carried by its entries, which
+        // check the state they were made on.
+        const changes = this.journalChanges.get(key);
+        if (changes !== undefined && changes[changes.length - 1]! >= before) return null;
+        return contentDigest(JSON.stringify(shape));
+      },
+      holds: (entry) => this.journalHolds(JSON.parse(entry) as ShapeJournalOp),
+      agrees: (entries) =>
+        entries.every((entry) => this.journalAgrees(JSON.parse(entry) as ShapeJournalOp)),
+      entries: (from) => {
+        const out: string[] = [];
+        for (let at = from; at < this.journalLog.length; at++) {
+          const text = encode(this.journalLog[at]!);
+          if (text === null) return null;
+          out.push(text);
+        }
+        return out;
+      },
+      apply: (entries) => {
+        for (const entry of entries) this.journalApply(JSON.parse(entry) as ShapeJournalOp);
+      },
+      truncate: (from) => {
+        for (let at = this.journalLog.length - 1; at >= from; at--) this.journalLog[at]!.undo();
+        this.journalLog.length = from;
+      },
+      contents: () => this.shapeContents(),
+    };
+  }
+
+  /** The registry's tables a unit's record cannot carry: the recursive
+   * placeholders, which are keyed by checker types (unit-journal.ts). A unit
+   * that changes one lowers again. The derived declared-order finalizers
+   * (closures) are checked beside them, in finalizerCount. */
+  recursiveSizes(): number[] {
+    return [this.recIds.size, this.pendingRec.size];
+  }
+
+  /** The derived declared-order finalizers, which are closures no record
+   * can carry (unit-journal.ts). */
+  finalizerCount(): number[] {
+    return [this.derivedDeclaredOrderFinalizers.length];
+  }
+
+  /** Notes `id`'s change at the end of the journal. */
+  private journalChange(id: string, encode: () => ShapeJournalOp | null, undo: () => void): void {
+    if (!this.journaling) return;
+    this.journalLog.push({ encode, undo });
+    const at = this.journalLog.length - 1;
+    const changes = this.journalChanges.get(id);
+    if (changes === undefined) this.journalChanges.set(id, [at]);
+    else changes.push(at);
+  }
+
+  /** Forgets the newest change to `id` (a logged change's undo). */
+  private forgetJournal(id: string): void {
+    const changes = this.journalChanges.get(id);
+    if (changes === undefined) return;
+    changes.pop();
+    if (changes.length === 0) this.journalChanges.delete(id);
+  }
+
+  /** Whether this process holds the change `op` makes already. */
+  private journalHolds(op: ShapeJournalOp): boolean {
+    switch (op.k) {
+      case "intern": {
+        if (this.byKey.get(op.key) !== op.id || !this.byId.has(op.id)) return false;
+        if (op.declaredOrder === null) return true;
+        const candidates = this.declaredOrderCandidates.get(op.id) ?? [];
+        return candidates.some(
+          (candidate) =>
+            sameOrder(candidate.order, op.declaredOrder!) &&
+            samePriority(candidate.priority, op.priority),
+        );
+      }
+      case "declare": {
+        const candidates = this.declaredOrderCandidates.get(op.id);
+        if (candidates === undefined) return false;
+        return candidates.some(
+          (candidate) =>
+            sameOrder(candidate.order, op.order) && samePriority(candidate.priority, op.priority),
+        );
+      }
+      case "accessor": {
+        const shape = this.byId.get(op.id);
+        return shape !== undefined && sameOrder(shape.accessorOrder, op.order);
+      }
+      case "extend": {
+        const shape = this.byId.get(op.id);
+        if (shape === undefined) return false;
+        return op.fields.every((field) =>
+          shape.fields.some(
+            (held) => held.name === field.name && typeEquals(held.type, field.type),
+          ),
+        );
+      }
+    }
+  }
+
+  /** Whether `op` makes the same change on the state it was made on, so
+   * applying it gives the state its unit left. */
+  private journalAgrees(op: ShapeJournalOp): boolean {
+    switch (op.k) {
+      case "intern": {
+        const id = this.byKey.get(op.key);
+        if (id === undefined) return this.byId.get(op.id) === undefined;
+        if (id !== op.id) return false;
+        return this.journalHolds(op);
+      }
+      case "declare": {
+        const shape = this.byId.get(op.id);
+        if (shape === undefined) return false;
+        if (this.journalHolds(op)) return true;
+        return (
+          sameOrder(shape.declaredOrder, op.previousOrder ?? undefined) &&
+          samePriority(this.declaredOrderPriority.get(op.id), op.previousPriority ?? undefined)
+        );
+      }
+      case "accessor": {
+        const shape = this.byId.get(op.id);
+        return shape !== undefined && shape.accessorOrder === undefined;
+      }
+      case "extend":
+        return this.byId.has(op.id);
+    }
+  }
+
+  /** Makes `op`'s change again: the op a record carries, at its unit's
+   * turn. */
+  private journalApply(op: ShapeJournalOp): void {
+    if (this.journalHolds(op)) return;
+    switch (op.k) {
+      case "intern": {
+        // The recorded priority, not the ambient one: the candidate the
+        // intern adds has to rank as the unit's own did, or a later unit's
+        // competing order settles the wrong way.
+        const id = this.withDeclaredOrderPriority(op.priority, () =>
+          this.intern(
+            op.fields,
+            op.tuple,
+            op.indexValue ?? undefined,
+            op.declaredOrder ?? undefined,
+          ),
+        );
+        if (id !== op.id)
+          throw new InternalCompilerError(`shape record ${op.id} does not match its fields`);
+        break;
+      }
+      case "declare": {
+        const shape = this.byId.get(op.id);
+        if (shape === undefined)
+          throw new InternalCompilerError(`shape record names unknown shape ${op.id}`);
+        this.withDeclaredOrderPriority(op.priority, () => this.adoptDeclaredOrder(shape, op.order));
+        break;
+      }
+      case "accessor": {
+        const shape = this.byId.get(op.id);
+        if (shape === undefined)
+          throw new InternalCompilerError(`shape record names unknown shape ${op.id}`);
+        this.adoptAccessorOrder(shape, op.order);
+        break;
+      }
+      case "extend":
+        this.extendShape(op.id, op.fields);
+        break;
+    }
+  }
+
+  /** The content of the interned shapes (JournalTable.contents): a change
+   * no entry carries is one no record can make again, so it leaves its unit
+   * without a record. A change the journal holds is carried by the unit's
+   * entries, so it does not. */
+  private shapeContents(): HeldContents {
+    const texts = new Map<string, string>();
+    const at = this.journalLog.length;
+    let indexed = 0;
+    const explained = (id: string): boolean => {
+      const changes = this.journalChanges.get(id);
+      return changes !== undefined && changes[changes.length - 1]! >= at;
+    };
+    const differs = (id: string, text: string): boolean => {
+      const shape = this.byId.get(id);
+      return shape === undefined || JSON.stringify(shape) !== text;
+    };
+    return {
+      extend: () => {
+        for (; indexed < this.shapes.length; indexed++) {
+          const shape = this.shapes[indexed]!;
+          texts.set(shape.id, JSON.stringify(shape));
+        }
+      },
+      changed: () => {
+        for (const [id, text] of texts) if (differs(id, text) && !explained(id)) return id;
+        return null;
+      },
+      changedAmong: (keys) => {
+        for (const key of keys) {
+          const text = texts.get(key);
+          if (text === undefined) continue;
+          if (differs(key, text) && !explained(key)) return key;
+        }
+        return null;
+      },
+      refresh: (keys) => {
+        for (const key of keys) {
+          const shape = this.byId.get(key);
+          if (shape === undefined) texts.delete(key);
+          else texts.set(key, JSON.stringify(shape));
+        }
+      },
+    };
   }
   /** ts.Types currently being mapped — a BACK-REFERENCE to one of these is
    * the recursive knot (`interface TreeNode { children: TreeNode[] }`):
@@ -471,19 +780,38 @@ export class ShapeRegistry {
   private adoptDeclaredOrder(shape: IrRecordShape, declaredOrder: string[] | undefined): void {
     if (declaredOrder === undefined) return;
     this.candidateCount++;
+    const priority = this.currentDeclaredOrderPriority;
     const candidates = this.declaredOrderCandidates.get(shape.id);
-    const candidate = { order: declaredOrder, priority: this.currentDeclaredOrderPriority };
+    const candidate = { order: declaredOrder, priority };
     if (candidates) candidates.push(candidate);
     else this.declaredOrderCandidates.set(shape.id, [candidate]);
     const previous = this.declaredOrderPriority.get(shape.id);
-    if (
-      previous !== undefined &&
-      comparePriority(previous, this.currentDeclaredOrderPriority) <= 0
-    ) {
-      return;
+    const previousOrder = shape.declaredOrder;
+    if (previous === undefined || comparePriority(previous, priority) > 0) {
+      shape.declaredOrder = this.withExtendedNames(shape.id, declaredOrder);
+      this.declaredOrderPriority.set(shape.id, priority);
     }
-    shape.declaredOrder = this.withExtendedNames(shape.id, declaredOrder);
-    this.declaredOrderPriority.set(shape.id, this.currentDeclaredOrderPriority);
+    this.journalChange(
+      shape.id,
+      () => ({
+        k: "declare",
+        id: shape.id,
+        order: declaredOrder,
+        priority: priorityRank(priority).slice(),
+        previousOrder: previousOrder ?? null,
+        previousPriority: previous === undefined ? null : priorityRank(previous).slice(),
+      }),
+      () => {
+        const list = this.declaredOrderCandidates.get(shape.id);
+        if (list !== undefined && list[list.length - 1] === candidate) list.pop();
+        this.candidateCount--;
+        if (previousOrder === undefined) delete shape.declaredOrder;
+        else shape.declaredOrder = previousOrder;
+        if (previous === undefined) this.declaredOrderPriority.delete(shape.id);
+        else this.declaredOrderPriority.set(shape.id, previous);
+        this.forgetJournal(shape.id);
+      },
+    );
   }
 
   /** Mutable generic-instance ranks settle only after reachability closes.
@@ -614,6 +942,7 @@ export class ShapeRegistry {
     let id = this.byKey.get(key);
     if (id === undefined) {
       id = keyedHelperName(this, "r", key, "");
+      const priority = this.currentDeclaredOrderPriority;
       const shape: IrRecordShape = {
         id,
         fields,
@@ -627,13 +956,41 @@ export class ShapeRegistry {
       this.byKey.set(key, id);
       this.byId.set(id, shape);
       this.shapes.push(shape);
+      const candidate =
+        declaredOrder === undefined
+          ? null
+          : { order: declaredOrder, priority: this.currentDeclaredOrderPriority };
       if (declaredOrder !== undefined) {
         this.candidateCount++;
-        this.declaredOrderCandidates.set(id, [
-          { order: declaredOrder, priority: this.currentDeclaredOrderPriority },
-        ]);
-        this.declaredOrderPriority.set(id, this.currentDeclaredOrderPriority);
+        this.declaredOrderCandidates.set(id, [candidate!]);
+        this.declaredOrderPriority.set(id, candidate!.priority);
       }
+      this.journalChange(
+        id,
+        () => ({
+          k: "intern",
+          id: id!,
+          key,
+          fields: fields.map((field) => ({ ...field })),
+          tuple: tuple === true,
+          indexValue: indexValue ?? null,
+          declaredOrder: declaredOrder?.slice() ?? null,
+          priority: priorityRank(priority).slice(),
+        }),
+        () => {
+          this.byKey.delete(key);
+          this.byId.delete(id!);
+          this.shapes.pop();
+          if (candidate !== null) {
+            this.candidateCount--;
+            this.declaredOrderCandidates.delete(id!);
+            this.declaredOrderPriority.delete(id!);
+          }
+          this.journalBorn.delete(id!);
+          this.forgetJournal(id!);
+        },
+      );
+      if (this.journaling) this.journalBorn.set(id, this.journalLog.length - 1);
     } else {
       this.adoptDeclaredOrder(this.byId.get(id)!, declaredOrder);
     }
@@ -688,23 +1045,60 @@ export class ShapeRegistry {
     if (!shape || shape.tuple || extra.length === 0) return;
     const fresh = extra.filter((f) => !shape.fields.some((x) => x.name === f.name));
     if (fresh.length === 0) return;
+    const previousFields = shape.fields;
+    const previousExtended = this.extendedNames.get(shapeId);
+    const previousOrder = shape.declaredOrder;
+    const candidates = this.declaredOrderCandidates.get(shapeId);
+    const previousCandidateOrders = candidates?.map((c) => c.order);
     shape.fields = [...shape.fields, ...fresh].sort((a, b) =>
       a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
     this.extendedCount += fresh.length;
-    this.extendedNames.set(shapeId, [
-      ...(this.extendedNames.get(shapeId) ?? []),
-      ...fresh.map((f) => f.name),
-    ]);
+    this.extendedNames.set(shapeId, [...(previousExtended ?? []), ...fresh.map((f) => f.name)]);
     if (shape.declaredOrder)
       shape.declaredOrder = this.withExtendedNames(shapeId, shape.declaredOrder);
-    const candidates = this.declaredOrderCandidates.get(shapeId);
     if (candidates) {
       for (const c of candidates) c.order = this.withExtendedNames(shapeId, c.order);
     }
     this.revision++;
     const key = this.keyOf(shape.fields, false, shape.indexValue);
-    if (!this.byKey.has(key)) this.byKey.set(key, shapeId);
+    const addedKey = !this.byKey.has(key);
+    if (addedKey) this.byKey.set(key, shapeId);
+    this.journalChange(
+      shapeId,
+      () => ({
+        k: "extend",
+        id: shapeId,
+        fields: fresh.map((field) => ({ name: field.name, type: field.type })),
+      }),
+      () => {
+        shape.fields = previousFields;
+        if (previousExtended === undefined) this.extendedNames.delete(shapeId);
+        else this.extendedNames.set(shapeId, previousExtended);
+        this.extendedCount -= fresh.length;
+        if (previousOrder === undefined) delete shape.declaredOrder;
+        else shape.declaredOrder = previousOrder;
+        if (candidates !== undefined && previousCandidateOrders !== undefined)
+          candidates.forEach((c, at) => (c.order = previousCandidateOrders[at]!));
+        this.revision--;
+        if (addedKey) this.byKey.delete(key);
+        this.forgetJournal(shapeId);
+      },
+    );
+  }
+
+  /** The first-seen accessor key order of a shape with accessor slots. */
+  adoptAccessorOrder(shape: IrRecordShape | undefined, order: string[] | undefined): void {
+    if (shape === undefined || order === undefined || shape.accessorOrder !== undefined) return;
+    shape.accessorOrder = order;
+    this.journalChange(
+      shape.id,
+      () => ({ k: "accessor", id: shape.id, order: order.slice() }),
+      () => {
+        delete shape.accessorOrder;
+        this.forgetJournal(shape.id);
+      },
+    );
   }
 }
 
@@ -1201,6 +1595,8 @@ export function formatIrType(
         return append("FileHandle");
       case "dir":
         return append("Dir");
+      case "mkdtempResult":
+        return append("DisposableTempDir");
       case "spawnRes":
         return append("SpawnSyncReturns");
       case "child":
@@ -1231,6 +1627,10 @@ export function formatIrType(
         return append("Hmac");
       case "fsWatcher":
         return append("FSWatcher");
+      case "watchEvents":
+        return append("FSWatchEvents");
+      case "statWatcher":
+        return append("StatWatcher");
       case "childStream":
         return append("Readable");
       case "childWriter":
@@ -1284,7 +1684,72 @@ function esOwnKeyOrder(names: string[]): string[] {
 export { PERF_ENTRY_MARKER };
 
 /** PerformanceEntry's toJSON fields, in toJSON's order. */
-export const PERF_ENTRY_FIELDS = ["name", "entryType", "startTime", "duration", "detail"];
+export const PERF_ENTRY_FIELDS: string[] = [...PERF_ENTRY_JSON_FIELDS];
+
+/** PerformanceResourceTiming's toJSON fields, in toJSON's order (Node's
+ * internal/perf/resource_timing.js). The class extends PerformanceEntry but
+ * its toJSON carries the resource fields instead of `detail`. */
+export const PERF_RESOURCE_TIMING_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "initiatorType",
+  "nextHopProtocol",
+  "workerStart",
+  "redirectStart",
+  "redirectEnd",
+  "fetchStart",
+  "domainLookupStart",
+  "domainLookupEnd",
+  "connectStart",
+  "connectEnd",
+  "secureConnectionStart",
+  "requestStart",
+  "finalResponseHeadersStart",
+  "firstInterimResponseStart",
+  "responseStart",
+  "responseEnd",
+  "transferSize",
+  "encodedBodySize",
+  "decodedBodySize",
+  "deliveryType",
+  "responseStatus",
+  "renderBlockingStatus",
+  "contentType",
+  "contentEncoding",
+] as const;
+
+/** The PerformanceResourceTiming members the entry record also carries:
+ * every resource field except the four base entry fields and the resource
+ * toJSON. Node's resource timings extend PerformanceEntry, so the fields
+ * live on the same record shape the entry classes share. */
+export const PERF_RESOURCE_FIELDS: readonly { name: string; type: "number" | "string" }[] = [
+  { name: "initiatorType", type: "string" },
+  { name: "nextHopProtocol", type: "string" },
+  { name: "workerStart", type: "number" },
+  { name: "redirectStart", type: "number" },
+  { name: "redirectEnd", type: "number" },
+  { name: "fetchStart", type: "number" },
+  { name: "domainLookupStart", type: "number" },
+  { name: "domainLookupEnd", type: "number" },
+  { name: "connectStart", type: "number" },
+  { name: "connectEnd", type: "number" },
+  { name: "secureConnectionStart", type: "number" },
+  { name: "requestStart", type: "number" },
+  { name: "finalResponseHeadersStart", type: "number" },
+  { name: "firstInterimResponseStart", type: "number" },
+  { name: "responseStart", type: "number" },
+  { name: "responseEnd", type: "number" },
+  { name: "transferSize", type: "number" },
+  { name: "encodedBodySize", type: "number" },
+  { name: "decodedBodySize", type: "number" },
+  { name: "deliveryType", type: "string" },
+  { name: "responseStatus", type: "number" },
+  { name: "renderBlockingStatus", type: "string" },
+  { name: "contentType", type: "string" },
+  { name: "contentEncoding", type: "string" },
+];
 
 /** The record shape behind PerformanceEntry, PerformanceMark and
  * PerformanceMeasure values (see mapType). The marker is an always-absent
@@ -1298,7 +1763,11 @@ export function perfEntryShape(shapes: ShapeRegistry, unions: UnionRegistry): st
       { name: "entryType", type: STRING },
       { name: "name", type: STRING },
       { name: "startTime", type: F64 },
-    ],
+      ...PERF_RESOURCE_FIELDS.map((field) => ({
+        name: field.name,
+        type: field.type === "number" ? F64 : STRING,
+      })),
+    ].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     false,
     undefined,
     PERF_ENTRY_FIELDS,
@@ -1815,6 +2284,12 @@ export interface TypeMapperCtx {
   /** Live class protocols retain identity and receiver dispatch rather than
    * copying an instance into an unrelated record layout. */
   classImplementedProtocol?: (type: ts.Type) => boolean;
+  /** The implementation's class declaration for a class the checker declares
+   * in a project declaration that has a runtime sibling (`lib.d.ts` beside
+   * `lib.js`): the lowering compiles that JavaScript class, so its instance
+   * and static types name the compiled class rather than a structural
+   * copy. */
+  classTwinDeclaration?: (decl: ts.ClassLikeDeclaration) => ts.ClassLikeDeclaration | null;
   /** MIXIN instance INTERSECTIONS (`Tagged.C & Derived` — values built
    * through a mixin result): resolved by chain structure to the unique
    * pinned instantiation they describe; null when ambiguous or when no
@@ -2729,7 +3204,11 @@ function isWorkerHandleSymbol(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-        isDeclaredInAmbientModule(d, "worker_threads"),
+        (isDeclaredInAmbientModule(d, "worker_threads") ||
+          ((ts.symbolName(symbol) === "MessagePort" ||
+            ts.symbolName(symbol) === "MessageChannel" ||
+            ts.symbolName(symbol) === "BroadcastChannel") &&
+            isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName))),
     )
   );
 }
@@ -3250,6 +3729,13 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) return BOOL;
   }
   if (ctx.foreignType !== undefined && ctx.foreignType(type)) return FOREIGN;
+  // A class the checker declares in a project declaration beside its
+  // runtime implementation (lib.d.ts beside lib.js): the value is the
+  // compiled JavaScript class, so its instance type names that class.
+  {
+    const twinClass = mapTwinClassInstance(type, ctx);
+    if (twinClass !== null) return twinClass;
+  }
   const localValue = ctx.localClassValue?.(type);
   if (localValue) {
     contextResolutions++;
@@ -3629,6 +4115,31 @@ export function isStdlibArrayLikeType(
       (decl) => ts.isInterfaceDeclaration(decl) && ctx.isStdlibFile(ts.getSourceFileOfNode(decl)),
     )
   );
+}
+
+/** The compiled class a project declaration's class type names (`lib.d.ts`
+ * beside `lib.js`): the implementation class the lowering compiles, as the
+ * class value for its static side or its instance object type. Null for
+ * every other type. */
+function mapTwinClassInstance(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  if (ctx.classTwinDeclaration === undefined) return null;
+  const symbol = type.getSymbol();
+  const decl = symbol ? symbol.valueDeclaration : undefined;
+  if (
+    decl === undefined ||
+    !(ts.isClassDeclaration(decl) || ts.isClassExpression(decl)) ||
+    !ts.getSourceFileOfNode(decl).isDeclarationFile
+  )
+    return null;
+  const implementation = ctx.classTwinDeclaration(decl);
+  if (implementation === null) return null;
+  const file = ts.getSourceFileOfNode(implementation);
+  if (!ctx.isProgramFile(file)) return null;
+  // The STATIC side (`typeof Point`) has construct signatures and is the
+  // class value; the instance side is the class's object type.
+  return ctx.checker.getConstructSignatures(type).length > 0
+    ? { kind: "classval", className: ctx.classNamer(implementation) }
+    : { kind: "object", className: ctx.classNamer(implementation) };
 }
 
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
@@ -4681,6 +5192,64 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return F64;
   }
+  // async_hooks.AsyncHook: a 1-based f64 handle into the runtime's hook
+  // registry (the AsyncLocalStorage story).
+  if (
+    psym !== undefined &&
+    psymName === "AsyncHook" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return F64;
+  }
+  // async_hooks.AsyncResource: a checked-dynamic handle whose payload lives
+  // exactly as long as the value does, so a resource the program drops is
+  // reclaimed with everything it captured.
+  if (
+    psym !== undefined &&
+    psymName === "AsyncResource" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return DYN;
+  }
+  // trace_events.Tracing: a native handle the runtime builds for
+  // createTracing, so the value is checked-dynamic and its member reads and
+  // enable()/disable() calls ride the dyn tree.
+  if (
+    psym !== undefined &&
+    psymName === "Tracing" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "trace_events"),
+    )
+  ) {
+    return DYN;
+  }
+  // async_hooks.RunScope (AsyncLocalStorage.withScope): a checked-dynamic
+  // object carrying dispose and [Symbol.dispose] — the runtime builds it.
+  if (
+    psym !== undefined &&
+    psymName === "RunScope" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return DYN;
+  }
   // diagnostics_channel.TracingChannel: the same f64-handle story over the
   // runtime's tracing registry (five event channels per entry).
   if (
@@ -4910,6 +5479,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       if (!elem) return null;
       return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
     }
+    // node:sqlite's row value type: what a statement answers for a cell at run
+    // time is checked-dynamic (a number, bigint, string or Uint8Array, or an
+    // array of them under returnArrays), which the declared union does not
+    // spell.
+    {
+      const alias = widened.getAliasSymbol();
+      if (
+        alias !== undefined &&
+        ts.symbolName(alias) === "SQLOutputValue" &&
+        alias.declarations.some(
+          (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+        )
+      )
+        return DYN;
+    }
   }
   if (
     psym &&
@@ -4932,7 +5516,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (psym !== undefined && psymName === "BlockList") ||
       (psym !== undefined && psymName === "BoundSocket") ||
       (psym !== undefined && psymName === "MIMEType") ||
-      (psym !== undefined && psymName === "MIMEParams")) &&
+      (psym !== undefined && psymName === "MIMEParams") ||
+      // node:sqlite's DatabaseSync and StatementSync (scr_sqlite.c):
+      // native handles whose getters and methods dispatch through the
+      // handle, like the classes above.
+      (psym !== undefined && psymName === "DatabaseSync") ||
+      (psym !== undefined && psymName === "StatementSync") ||
+      (psym !== undefined && psymName === "StatementSyncIterator") ||
+      (psym !== undefined && psymName === "Session") ||
+      (psym !== undefined && psymName === "SQLTagStore") ||
+      (psym !== undefined && psymName === "DatabaseSyncLimits") ||
+      // The records node:sqlite answers as values: a statement's resulting
+      // changes, its column metadata, and sqlite.backup's progress record
+      // (read through the callback's checked-dynamic parameter).
+      (psym !== undefined && psymName === "StatementResultingChanges") ||
+      (psym !== undefined && psymName === "StatementColumnMetadata") ||
+      (psym !== undefined && psymName === "BackupProgressInfo")) &&
     psym.declarations.some(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
@@ -5314,6 +5913,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "bigintStats" };
   }
+  // `import.meta` read as a value is the checked-dynamic metadata object the
+  // compiler builds for the module (import-meta.ts); its members read through
+  // it like any other checked-dynamic record.
+  if (
+    psym !== undefined &&
+    psymName === "ImportMeta" &&
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  )
+    return DYN;
   // module.enableCompileCache()'s result and its options argument
   // (@types/node's EnableCompileCacheResult and EnableCompileCacheOptions,
   // and the fallback's twins) are the plain objects Node passes: a result
@@ -5484,6 +6094,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "secureCtx" };
   }
+  // The object mkdtempDisposable answers: @types/node declares
+  // `interface DisposableTempDir` in both node:fs and node:fs/promises, and
+  // the shipped fallback mirrors it. It is the created path plus the removal
+  // and disposal hooks, so it maps to one handle.
+  if (
+    psym !== undefined &&
+    psymName === "DisposableTempDir" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        (isDeclaredInAmbientModule(d, "fs") || isDeclaredInAmbientModule(d, "fs/promises")),
+    )
+  ) {
+    return { kind: "mkdtempResult" };
+  }
   // Scrypt's runtime options retain property accessors and aliases. Use
   // checked values so presence probes and repeated getter reads match Node.
   if (
@@ -5541,6 +6167,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "fsWatcher" };
+  }
+  // fs.StatWatcher: the fs.watchFile handle (scr_watch_file.c), declared
+  // beside FSWatcher in the same ambient module.
+  if (
+    psym !== undefined &&
+    psymName === "StatWatcher" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
+  ) {
+    return { kind: "statWatcher" };
   }
   // The piped child-output stream, under BOTH spellings @types/node uses
   // for it: stream.Readable (ChildProcess.stdout's declared type — the
@@ -5991,8 +6631,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!inner) return null;
     return { kind: "promise", inner };
   }
-  // Native collection iterators use checked runtime iterator objects.
-  if (isStdlibInterface("MapIterator") || isStdlibInterface("SetIterator")) return DYN;
+  // Native collection iterators use checked runtime iterator objects, and a
+  // web stream's async iterator is the runtime's iterator object too.
+  if (
+    isStdlibInterface("MapIterator") ||
+    isStdlibInterface("SetIterator") ||
+    isStdlibInterface("ReadableStreamAsyncIterator")
+  )
+    return DYN;
   // AsyncIterable<T>, AsyncIterableIterator<T> and AsyncIterator<T> as VALUE
   // types name a protocol any object can implement. A protocol type the
   // program moves such an object into (TypeMapperCtx.
@@ -6760,7 +7406,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     ((psym !== undefined && psymName === "PerformanceEntry") ||
       (psym !== undefined && psymName === "PerformanceMark") ||
-      (psym !== undefined && psymName === "PerformanceMeasure")) &&
+      (psym !== undefined && psymName === "PerformanceMeasure") ||
+      (psym !== undefined && psymName === "PerformanceResourceTiming")) &&
     psym.declarations.some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
@@ -6793,7 +7440,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // monitorEventLoopDelay's IntervalHistogram: a numeric handle into the
   // runtime's histogram table, like a timer handle. Its members lower over
   // the handle (builtins/performance.ts).
-  if (isStdlibInterface("IntervalHistogram")) return F64;
+  // Histogram values are refcounted runtime handle objects: an
+  // IntervalHistogram (monitorEventLoopDelay) and a RecordableHistogram
+  // (createHistogram) are both checked-dynamic handles whose release frees
+  // the buckets when the value dies, so a short-lived histogram does not
+  // stay in a thread table until exit. The members lower over the handle,
+  // which carries the class its fields come from.
+  if (
+    isStdlibInterface("IntervalHistogram") ||
+    isStdlibInterface("Histogram") ||
+    isStdlibInterface("RecordableHistogram")
+  )
+    return DYN;
   if (isStdlibInterface("CursorPos")) {
     return {
       kind: "record",
@@ -10997,7 +11655,7 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
         inner.indexValue,
         inner.declaredOrder,
       );
-      adoptAccessorOrder(shapes.get(recursive), inner.accessorOrder);
+      shapes.adoptAccessorOrder(shapes.get(recursive), inner.accessorOrder);
       return { kind: "record", shapeId: recursive };
     }
     // A record with no typed payload contract is a view of an existing
@@ -11019,7 +11677,7 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const refined = refinedConstituentShape(widened, inner, ctx);
     if (refined !== null) return { kind: "record", shapeId: refined };
     const shapeId = shapes.intern(inner.fields, false, inner.indexValue, inner.declaredOrder);
-    adoptAccessorOrder(shapes.get(shapeId), inner.accessorOrder);
+    shapes.adoptAccessorOrder(shapes.get(shapeId), inner.accessorOrder);
     return { kind: "record", shapeId };
   } finally {
     shapes.inProgress.delete(widened);
@@ -11323,12 +11981,6 @@ export function spreadsDictSource(checker: ts.TypeChecker, type: ts.Type): boole
       (p) => ts.isSpreadAssignment(p) && dictSpreadSourceTs(checker, p.expression, 0),
     )
   );
-}
-
-/** The first-seen accessor key order of a shape with accessor slots. */
-function adoptAccessorOrder(shape: IrRecordShape | undefined, order: string[] | undefined): void {
-  if (shape !== undefined && order !== undefined && shape.accessorOrder === undefined)
-    shape.accessorOrder = order;
 }
 
 /** A refinement intersection (`Expr & { kind: "mul" }`, which the checker

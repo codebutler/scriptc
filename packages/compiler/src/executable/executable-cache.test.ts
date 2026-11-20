@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +47,8 @@ const native: EarlyExecutableNativeFeatures = {
   textDecoderLegacy: false,
   bigintBytes: false,
   mutableBuffers: false,
+  argon2: false,
+  mlkem: false,
   fileHandle: false,
   fetch: true,
   zlib: false,
@@ -75,6 +78,7 @@ const native: EarlyExecutableNativeFeatures = {
   textCodecDyn: false,
   watch: false,
   watchFile: false,
+  watchEvents: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -604,6 +608,7 @@ test("routed executable hits require an unchanged compiler implementation proof"
       size: implementationInfo.size,
       mtimeMs: implementationInfo.mtimeMs,
       ctimeMs: implementationInfo.ctimeMs,
+      content: createHash("sha256").update("compiler-v1\n").digest("hex"),
     },
   ];
   const tracker = new FrontendInputTracker();
@@ -696,6 +701,7 @@ async function routedFixture(executableRestored = true) {
       size: info.size,
       mtimeMs: info.mtimeMs,
       ctimeMs: info.ctimeMs,
+      content: createHash("sha256").update("compiler-v1\n").digest("hex"),
     },
   ];
   const tracker = new FrontendInputTracker();

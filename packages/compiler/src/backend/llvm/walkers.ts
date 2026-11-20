@@ -17,9 +17,11 @@ import { InternalCompilerError } from "../../errors.js";
  * jsonStringify emission site runs the pending check (join still walks
  * only f64/string/bool/unit arms — the frontend's fence). */
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
+import { isPerfEntryShape } from "../../ir/ir.js";
 import {
   isPerfNodeTimingShape,
   isRefCounted,
+  PERF_ENTRY_JSON_FIELDS,
   PERF_NODE_TIMING_JSON_FIELDS,
   typeKey,
 } from "../../ir/ir.js";
@@ -47,6 +49,8 @@ import { undefinedArmTag } from "../../ir/analysis.js";
  * ToString), and NUL-terminated C-string constants (scr_jb_puts /
  * scr_error-style label texts). */
 export interface WalkerHost extends ShapeHost {
+  /** See LlEmitter.contentSymbol. */
+  contentSymbol(prefix: string, text: string): string;
   readonly unionsById: Map<string, IrUnionDef>;
   /** Arrays of this element type can hold SCR_ARR_FOREIGN elements. */
   mayHoldForeign(elem: IrType): boolean;
@@ -217,7 +221,7 @@ export class LlWalkers {
     const key = typeKey(t);
     const existing = this.jsonWriters.get(key);
     if (existing) return existing;
-    const name = `sc_jw_${this.jsonWriters.size}`;
+    const name = this.host.contentSymbol("sc_jw_", key);
     this.jsonWriters.set(key, name);
     this.host.journalAllocated?.(name, "walkers.jsonWriteHelper", [t]);
     const B = new BlockBuilder();
@@ -379,7 +383,11 @@ export class LlWalkers {
     // and all. performance.nodeTiming is the exception: stringify runs its
     // toJSON first, which answers the class's own field list (without
     // uvMetricsInfo), so that list is what serializes.
-    const toJsonOrder = isPerfNodeTimingShape(shape) ? PERF_NODE_TIMING_JSON_FIELDS : null;
+    const toJsonOrder = isPerfNodeTimingShape(shape)
+      ? PERF_NODE_TIMING_JSON_FIELDS
+      : isPerfEntryShape(shape)
+        ? PERF_ENTRY_JSON_FIELDS
+        : null;
     emitPerKeyOrder(B, shape, fieldBase, "%v", (declaredOrder) => {
       const order = toJsonOrder ?? declaredOrder;
       const inOrder = new Set(order);
@@ -544,7 +552,7 @@ export class LlWalkers {
     const shape = this.host.recordsById.get(shapeId);
     if (!shape)
       throw new InternalCompilerError(`llvm emitter bug: field writer of unknown shape ${shapeId}`);
-    const name = `sc_jwf_${this.recordFieldWriters.size}`;
+    const name = this.host.contentSymbol("sc_jwf_", shapeId);
     this.recordFieldWriters.set(shapeId, name);
     this.host.journalAllocated?.(name, "walkers.recordFieldWriter", [shapeId]);
     const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
@@ -1018,7 +1026,7 @@ export class LlWalkers {
     if (existing) return existing;
     const def = this.host.unionsById.get(unionId);
     if (!def) throw new InternalCompilerError(`llvm emitter bug: join of unknown union ${unionId}`);
-    const name = `sc_uj_${this.unionJoinFns.size}`;
+    const name = this.host.contentSymbol("sc_uj_", unionId);
     this.unionJoinFns.set(unionId, name);
     this.host.journalAllocated?.(name, "walkers.unionJoinHelper", [unionId]);
 

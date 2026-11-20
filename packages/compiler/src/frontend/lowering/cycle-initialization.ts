@@ -76,11 +76,11 @@ const NO_STATIC_GLOBALS: ReadonlySet<string> = new Set();
 /** Registers the initialization flags after global collection. Bindings
  * whose early access has no exact representation are refused: a `var`
  * (Node reads `undefined` there, but module storage only starts when the
- * declaring module's body starts), a binding without module storage, a
- * class that another module's `extends` clause can reach early (the
- * subclass is static), or one with a use the lowering resolves from the
- * binding's type (a property key, a `typeof` operand). Other classes get a
- * flag like their module's early-reached classes. */
+ * declaring module's body starts), a binding without module storage, or
+ * one with a use the lowering resolves from the binding's type (a
+ * property key, a `typeof` operand). A class gets a flag like the
+ * let/const bindings do — generic families included, and an `extends`
+ * clause in another module checks it where that class statement runs. */
 export function markCycleEarlyBindings(lowerer: Lowerer): void {
   const early = cycleEarlyBindings(
     lowerer.program,
@@ -109,11 +109,27 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
       const deferred = lowerer.deferredDiags.has(binding.symbol);
       if (deferred) lowerer.flushDeferred(binding.symbol);
       const info = lowerer.classBySymbol.get(binding.symbol);
-      const heritage = earlyHeritageReference(lowerer, binding);
-      if (info !== undefined && !info.generic && heritage === null)
+      if (info !== undefined) {
         registerClassInitFlag(lowerer, binding, info, true);
-      else if (!deferred || info !== undefined)
-        refuse(heritage ?? binding.reference, `the class ${where}`);
+        // Another module's `extends` clause reads the class value when
+        // that module's class statement runs: the subclass's layout is
+        // static, so the check goes at that statement (withClassInitFlag).
+        const flag = lowerer.classInitFlags.get(info.def.name);
+        if (flag !== undefined)
+          for (const decl of earlyHeritageReferences(lowerer, binding)) {
+            // A class EXPRESSION has no statement whose place the check can
+            // take, so its heritage read keeps the fence.
+            if (!ts.isClassDeclaration(decl)) {
+              refuse(decl, `the class ${where}`);
+              continue;
+            }
+            const checks = lowerer.heritageClassChecks.get(decl) ?? [];
+            if (!checks.includes(flag)) checks.push(flag);
+            lowerer.heritageClassChecks.set(decl, checks);
+          }
+      } else if (!deferred) {
+        refuse(binding.reference, `the class ${where}`);
+      }
       continue;
     }
     const global = lowerer.globalsBySymbol.get(binding.symbol);
@@ -271,37 +287,91 @@ function registerClassInitFlag(
   });
 }
 
-/** A reference to a cycle class in another class's `extends` clause, in a
- * module that can run before the class statement: Node evaluates the clause
- * when that module's class statement runs, but the compiled subclass is
- * static and has no access to check. Null when there is none. */
-function earlyHeritageReference(lowerer: Lowerer, binding: CycleEarlyBinding): ts.Node | null {
+/** The classes, in modules that can run before `binding`'s class statement,
+ * whose `extends` clause (or another heritage expression) reads the class
+ * value. Node evaluates the clause when that class statement runs, so the
+ * reference is a read of the binding at that point; the compiled subclass
+ * is static, so its statement carries the initialization check. */
+function earlyHeritageReferences(
+  lowerer: Lowerer,
+  binding: CycleEarlyBinding,
+): ts.ClassLikeDeclaration[] {
   const declaration = binding.name.parent;
+  const out: ts.ClassLikeDeclaration[] = [];
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (sf.isDeclarationFile || sf === binding.module || binding.settled.has(sf)) continue;
+    if (sf.isDeclarationFile || binding.settled.has(sf)) continue;
     const names = classLocalNames(lowerer, sf, binding.symbol, binding.name.text, true);
     if (names.size === 0) continue;
-    let found: ts.Node | null = null;
     ts.walkPreorder(sf, (node) => {
-      if (found !== null || node === declaration) return "skip";
-      if (!ts.isHeritageClause(node)) return undefined;
-      // Node evaluates the whole clause when the class statement runs:
-      // any reference inside it (parenthesized, a factory argument)
-      // reaches the class.
-      ts.walkPreorder(node, (inner) => {
-        if (found !== null) return "skip";
-        if (
-          ts.isIdentifier(inner) &&
-          names.has(inner.text) &&
-          resolvesTo(lowerer, inner, binding.symbol, true)
-        )
-          found = inner;
+      if (node === declaration) return "skip";
+      // Only an `extends` clause is EVALUATED: an `implements` clause and a
+      // heritage TYPE (`extends Base<C>`) name types, which Node erases, so
+      // no read of the class happens there.
+      if (!ts.isHeritageClause(node) || node.token !== ts.SyntaxKind.ExtendsKeyword)
         return undefined;
-      });
+      let found = false;
+      for (const base of node.types.nodes) {
+        if (found) break;
+        if (!ts.isExpressionWithTypeArguments(base)) continue;
+        // The check runs BEFORE the statement's own expression, so it is
+        // exact only where the heritage expression IS the read: a bare
+        // identifier (parenthesized, asserted) or a namespace member. Any
+        // other expression — a conditional, a call, a factory argument —
+        // performs work first, which Node runs before it reaches the class;
+        // pre-empting it with the ReferenceError would be a lie, so those
+        // shapes keep their unchecked read. A type argument is erased and
+        // never read at all.
+        const reference = bareHeritageReference(base.expression);
+        if (
+          reference !== null &&
+          names.has(reference.text) &&
+          resolvesTo(lowerer, reference, binding.symbol, true)
+        )
+          found = true;
+      }
+      if (found) {
+        const cls = enclosingClass7(node);
+        // In the declaring module the statements run in source order: a
+        // subclass below the declaration reads an initialized class.
+        const after =
+          sf === binding.module &&
+          declaration !== undefined &&
+          ts.tokenStartOfNode(cls ?? node) > ts.tokenStartOfNode(declaration);
+        if (cls !== null && !after && !out.includes(cls)) out.push(cls);
+      }
       return "skip";
     });
-    if (found !== null) return found;
   }
+  return out;
+}
+
+/** The identifier a heritage expression reads AS ITS WHOLE VALUE: the base
+ * name, unwrapped from parentheses, assertions and non-null marks, or the
+ * member of a namespace access (`ns.Base`). Null when the expression does
+ * any work of its own first. */
+function bareHeritageReference(expression: ts.Expression): ts.Identifier | null {
+  let e: ts.Expression = expression;
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(e) ||
+      ts.isAsExpression(e) ||
+      ts.isNonNullExpression(e) ||
+      ts.isSatisfiesExpression(e)
+    ) {
+      e = e.expression;
+      continue;
+    }
+    break;
+  }
+  if (ts.isIdentifier(e)) return e;
+  if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) return e.name;
+  return null;
+}
+
+/** The class-like declaration a heritage clause belongs to. */
+function enclosingClass7(node: ts.Node): ts.ClassLikeDeclaration | null {
+  for (let p: ts.Node | undefined = node; p !== undefined; p = p.parent)
+    if (ts.isClassLikeDeclaration(p)) return p;
   return null;
 }
 
@@ -424,12 +494,66 @@ function coversReference(flag: CycleInitFlag, loc: SrcLoc): boolean {
 }
 
 /** The class statement's static initialization, followed by the store of
- * its initialization flag when it has one. */
+ * its initialization flag when it has one. A statement whose own `extends`
+ * clause reads a flagged class checks that flag first — Node evaluates the
+ * clause before everything else the statement runs. */
 export function withClassInitFlag(lowerer: Lowerer, info: ClassInfo, stmts: IrStmt[]): IrStmt[] {
-  const flag = lowerer.classInitFlags.get(info.def.name);
-  if (flag === undefined) return stmts;
   const loc = info.decl ? locOf(info.decl) : (stmts[0]?.loc ?? { file: "", start: 0, end: 0 });
-  return [{ kind: "block", body: [...stmts, setFlag(flag, loc)], loc }];
+  // A decorated class evaluates its decorator factories before it reads the
+  // heritage: its checks go inside that sequence (lowerClassDecoration),
+  // not before it.
+  const decorationsFirst =
+    info.classDecorators !== undefined &&
+    !info.classDecorators.poisoned &&
+    info.classDecorators.shapes !== undefined;
+  // A generic class's instantiations share the declaration; the family is
+  // the class whose statement runs, so only it emits the checks.
+  const checks =
+    !decorationsFirst && info.decl != null && info.genericInstance === undefined
+      ? lowerer.heritageClassChecks.get(info.decl)
+      : undefined;
+  const flag = lowerer.classInitFlags.get(info.def.name);
+  if (checks === undefined && flag === undefined) return stmts;
+  const body: IrStmt[] = [
+    ...(checks ?? []).map((base) => classInitCheck(base, loc)),
+    ...stmts,
+    ...(flag === undefined ? [] : [setFlag(flag, loc)]),
+  ];
+  return [{ kind: "block", body, loc }];
+}
+
+/** The checks a class statement emits for the cycle classes its `extends`
+ * clause reads, at `loc` (the statement). A decorated class calls this from
+ * its decoration sequence, after the decorator factories Node evaluates
+ * first; every other class gets them at the head of its statement
+ * (withClassInitFlag). */
+export function heritageChecksFor(
+  lowerer: Lowerer,
+  decl: ts.ClassLikeDeclaration,
+  loc: SrcLoc,
+): IrStmt[] {
+  const checks = lowerer.heritageClassChecks.get(decl);
+  return checks === undefined ? [] : checks.map((flag) => classInitCheck(flag, loc));
+}
+
+/** The check of a flagged class's initialization, throwing Node's
+ * ReferenceError naming the reference's own spelling. */
+function classInitCheck(flag: CycleInitFlag, loc: SrcLoc): IrStmt {
+  const name = coveredReference(flag, loc)?.name ?? flag.name;
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "intrinsic",
+      name: "module.tdzCheck",
+      args: [
+        { kind: "varRef", localId: flag.flagId, type: BOOL, loc },
+        { kind: "strLit", value: name, type: STRING, loc },
+      ],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
 }
 
 function registerInitFlag(
@@ -567,11 +691,103 @@ export function checkCycleBindingAccesses(lowerer: Lowerer, mod: IrModule): void
     return;
   const fileOfInit = new Map<string, ts.SourceFile>();
   for (const [sf, name] of lowerer.initNameOf) fileOfInit.set(name, sf);
+  // Most functions run early, so the flags, classes and statics they check
+  // are the same for all of them: build that state once instead of copying
+  // every flagged binding per function.
+  const shared = sharedCycleChecks(lowerer);
   for (const fn of mod.functions) {
     if (fn.name.startsWith(GENERATED_CLASS_HELPER)) continue;
-    rewriteFunction(lowerer, fn, fileOfInit.get(fn.name));
+    rewriteFunction(lowerer, fn, fileOfInit.get(fn.name), shared);
   }
   markUninitializedWrites(lowerer, mod);
+}
+
+/** The check state of a function that can run before any declaration: every
+ * flag applies. Class members omit their own class's flag, whose state the
+ * class's creation sets; the maps without each class's flag are built on the
+ * first function of that class and reused by the rest. */
+interface SharedCycleChecks {
+  active: Map<string, CycleInitFlag>;
+  classes: Map<string, CycleInitFlag>;
+  statics: Map<string, CycleInitFlag[]>;
+  called: readonly CycleInitFlag[];
+  /** The class names, and the first segments of any that carry a dot: a
+   * function name's class is its text between the leading `%` and the first
+   * `.`, which is the whole name for an ordinary class. */
+  classNames: ReadonlySet<string>;
+  dottedHeads: ReadonlySet<string>;
+  withoutClass: Map<
+    string,
+    { classes: Map<string, CycleInitFlag>; statics: Map<string, CycleInitFlag[]> }
+  >;
+}
+
+function sharedCycleChecks(lowerer: Lowerer): SharedCycleChecks {
+  const classes = new Map<string, CycleInitFlag>();
+  const statics = new Map<string, CycleInitFlag[]>();
+  for (const [className, flag] of lowerer.classInitFlags) {
+    classes.set(className, flag);
+    for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS)
+      statics.set(id, [...(statics.get(id) ?? []), flag]);
+  }
+  const classNames = new Set<string>();
+  const dottedHeads = new Set<string>();
+  for (const name of lowerer.classInitFlags.keys()) {
+    classNames.add(name);
+    const dot = name.indexOf(".");
+    if (dot > 0) dottedHeads.add(name.slice(0, dot));
+  }
+  return {
+    active: lowerer.cycleInitFlags,
+    classes,
+    statics,
+    called: lowerer.calledBindingInitFlags,
+    classNames,
+    dottedHeads,
+    withoutClass: new Map(),
+  };
+}
+
+/** The classes whose member function `fnName` is: the class itself, and a
+ * dotted class name it is also a prefix of, as the per-function filter
+ * (startsWith(`%$class.`)) would exclude both. */
+function owningClasses(shared: SharedCycleChecks, fnName: string): string[] {
+  if (!fnName.startsWith("%")) return [];
+  const dot = fnName.indexOf(".", 1);
+  if (dot < 0) return [];
+  const head = fnName.slice(1, dot);
+  const owners: string[] = [];
+  if (shared.classNames.has(head)) owners.push(head);
+  if (shared.dottedHeads.has(head)) {
+    for (const name of shared.classNames) {
+      if (name !== head && fnName.startsWith(`%${name}.`)) owners.push(name);
+    }
+  }
+  return owners;
+}
+
+function classChecksWithout(
+  shared: SharedCycleChecks,
+  owners: readonly string[],
+): { classes: Map<string, CycleInitFlag>; statics: Map<string, CycleInitFlag[]> } {
+  const key = owners.join("\0");
+  const cached = shared.withoutClass.get(key);
+  if (cached !== undefined) return cached;
+  const excluded = new Set<CycleInitFlag>();
+  for (const name of owners) {
+    const flag = shared.classes.get(name);
+    if (flag !== undefined) excluded.add(flag);
+  }
+  const classes = new Map(shared.classes);
+  for (const name of owners) classes.delete(name);
+  const statics = new Map<string, CycleInitFlag[]>();
+  for (const [id, flags] of shared.statics) {
+    const rest = flags.filter((flag) => !excluded.has(flag));
+    if (rest.length > 0) statics.set(id, rest);
+  }
+  const entry = { classes, statics };
+  shared.withoutClass.set(key, entry);
+  return entry;
 }
 
 /** The helpers class dispatch and class reflection generate
@@ -596,7 +812,28 @@ function markUninitializedWrites(lowerer: Lowerer, mod: IrModule): void {
   if (ids.size === 0) return;
   const mark = (s: IrStmt): IrStmt =>
     s.kind === "assign" && !s.initializes && ids.has(s.localId) ? { ...s, initializes: true } : s;
+  /** Whether `body` holds a write to one of the bindings, which is what the
+   * walk below marks; a function without one keeps its nodes as they are. */
+  const marks = (body: readonly IrStmt[]): boolean => {
+    let found = false;
+    const expr = (e: IrExpr): boolean => {
+      if (found) return false;
+      if (e.kind === "assignExpr" && ids.has(e.localId)) found = true;
+      return !found;
+    };
+    const stmt = (s: IrStmt): boolean => {
+      if (found) return false;
+      if (s.kind === "assign" && !s.initializes && ids.has(s.localId)) found = true;
+      return !found;
+    };
+    for (const statement of body) {
+      everyStmt(statement, { expr, stmt });
+      if (found) return true;
+    }
+    return false;
+  };
   for (const fn of mod.functions) {
+    if (!marks(fn.body)) continue;
     let temps = 0;
     const markExpr = (e: IrExpr): IrExpr => {
       if (e.kind !== "assignExpr" || !ids.has(e.localId)) return e;
@@ -625,32 +862,66 @@ function rewriteFunction(
   lowerer: Lowerer,
   fn: IrFunction,
   initOf: ts.SourceFile | undefined,
+  shared: SharedCycleChecks,
 ): void {
-  const active = new Map<string, CycleInitFlag>();
-  const runsEarly = (flag: CycleInitFlag): boolean =>
-    initOf === undefined || initOf === flag.module || !flag.settled.has(initOf);
-  for (const [id, flag] of lowerer.cycleInitFlags) {
-    if (runsEarly(flag)) active.set(id, flag);
+  let active: Map<string, CycleInitFlag>;
+  let classes: Map<string, CycleInitFlag>;
+  let statics: Map<string, CycleInitFlag[]>;
+  let called: readonly CycleInitFlag[];
+  if (initOf === undefined) {
+    // Every function that is not a module %init runs early: reuse the state
+    // built once for the pass. A class's own members run only once the class
+    // exists, or inside its own definition, where the inner binding is
+    // initialized, so they omit their class's flag and its static storage.
+    const owners = owningClasses(shared, fn.name);
+    const filtered = owners.length === 0 ? null : classChecksWithout(shared, owners);
+    active = shared.active;
+    classes = filtered === null ? shared.classes : filtered.classes;
+    statics = filtered === null ? shared.statics : filtered.statics;
+    called = shared.called;
+  } else {
+    const runsEarly = (flag: CycleInitFlag): boolean =>
+      initOf === flag.module || !flag.settled.has(initOf);
+    active = new Map<string, CycleInitFlag>();
+    for (const [id, flag] of lowerer.cycleInitFlags) {
+      if (runsEarly(flag)) active.set(id, flag);
+    }
+    // Classes, by name, and the static field storage each reaches (a base
+    // class's statics through a subclass too). A class's own members run
+    // only once the class exists, or inside its own definition, where the
+    // inner binding is initialized.
+    const ownClasses = new Map<string, CycleInitFlag>();
+    const ownStatics = new Map<string, CycleInitFlag[]>();
+    for (const [className, flag] of lowerer.classInitFlags) {
+      if (!runsEarly(flag) || fn.name.startsWith(`%${className}.`)) continue;
+      ownClasses.set(className, flag);
+      for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS)
+        ownStatics.set(id, [...(ownStatics.get(id) ?? []), flag]);
+    }
+    classes = ownClasses;
+    statics = ownStatics;
+    // Bindings without storage, by the calls that name them.
+    called = lowerer.calledBindingInitFlags.filter(runsEarly);
   }
-  // Classes, by name, and the static field storage each reaches (a base
-  // class's statics through a subclass too). A class's own members run only
-  // once the class exists, or inside its own definition, where the inner
-  // binding is initialized.
-  const classes = new Map<string, CycleInitFlag>();
-  const statics = new Map<string, CycleInitFlag[]>();
-  for (const [className, flag] of lowerer.classInitFlags) {
-    if (!runsEarly(flag) || fn.name.startsWith(`%${className}.`)) continue;
-    classes.set(className, flag);
-    for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS)
-      statics.set(id, [...(statics.get(id) ?? []), flag]);
-  }
-  // Bindings without storage, by the calls that name them.
-  const called = lowerer.calledBindingInitFlags.filter(runsEarly);
   if (active.size === 0 && classes.size === 0 && called.length === 0) return;
   const flagOf = (localId: string, loc: SrcLoc): CycleInitFlag | undefined =>
     active.get(localId) ?? statics.get(localId)?.find((flag) => coversReference(flag, loc));
   const namesStatic = (flag: CycleInitFlag, fnName: string): boolean =>
     (flag.staticOwners ?? []).some((owner) => fnName.startsWith(`%${owner}.static:`));
+  // A generic class's instantiations (`Box%<hex>`) are the class values
+  // that construction and `instanceof` name; the binding the program reads
+  // is the family (`Box`), which owns the initialization state.
+  const familyFlagOf = (className: string): CycleInitFlag | undefined => {
+    for (const [name, flag] of classes) {
+      if (
+        className.length > name.length &&
+        className.startsWith(name) &&
+        className[name.length] === "%"
+      )
+        return flag;
+    }
+    return undefined;
+  };
   const classFlagOf = (e: IrExpr): CycleInitFlag | undefined => {
     if (classes.size === 0) return undefined;
     switch (e.kind) {
@@ -658,7 +929,7 @@ function rewriteFunction(
       case "classRef":
       case "instanceOf":
       case "caughtCheck": {
-        const flag = classes.get(e.className);
+        const flag = classes.get(e.className) ?? familyFlagOf(e.className);
         return flag !== undefined && coversReference(flag, e.loc) ? flag : undefined;
       }
       case "call":
@@ -679,6 +950,40 @@ function rewriteFunction(
         return undefined;
     }
   };
+  // Most functions name no flagged binding: the walk below only asks whether
+  // one node would be rewritten, and stops at the first that would, so a
+  // function that holds none keeps its nodes as they are (rebuilt, they
+  // would be identical).
+  const wouldRewrite = (): boolean => {
+    let found = false;
+    const expr = (e: IrExpr): boolean => {
+      if (found) return false;
+      if (
+        classFlagOf(e) !== undefined ||
+        called.some((flag) => calledReference(flag, e.loc) !== undefined) ||
+        ((e.kind === "varRef" || e.kind === "incDec" || e.kind === "assignExpr") &&
+          flagOf(e.localId, e.loc) !== undefined)
+      ) {
+        found = true;
+        return false;
+      }
+      return true;
+    };
+    const stmt = (s: IrStmt): boolean => {
+      if (found) return false;
+      if (s.kind === "assign" && !s.initializes && flagOf(s.localId, s.loc) !== undefined) {
+        found = true;
+        return false;
+      }
+      return true;
+    };
+    for (const statement of fn.body) {
+      everyStmt(statement, { expr, stmt });
+      if (found) return true;
+    }
+    return false;
+  };
+  if (!wouldRewrite()) return;
   let temps = 0;
   const check = (flag: CycleInitFlag, loc: SrcLoc): IrStmt => {
     // Node's ReferenceError names the binding the reference spells.

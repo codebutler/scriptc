@@ -89,6 +89,8 @@ export interface EarlyExecutableNativeFeatures {
   /** The process stream object's color methods: SCR_TTY_COLORS and
    * scr_tty_colors.c. */
   ttyColors?: boolean;
+  /** A Console built with inspectOptions or colorMode. */
+  consoleOptions?: boolean;
   /** pipe()'s listeners and Node's unpipe: scr_stream_pipe_events.c. */
   streamPipeEvents?: boolean;
   /** fs stream options that can hold a signal: SCR_FS_STREAM_SIGNAL. */
@@ -139,7 +141,11 @@ export interface EarlyExecutableNativeFeatures {
   arrJoinStr?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
+  /** node:sqlite: scr_sqlite.c and the vendored SQLite archive. */
+  sqlite?: boolean;
   webStreams?: boolean;
+  /** filehandle.readableWebStream: scr_fs_web_stream.c. */
+  fsWebStream?: boolean;
   webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
@@ -194,11 +200,15 @@ export interface EarlyExecutableNativeFeatures {
   textCodecDyn: boolean;
   watch: boolean;
   watchFile: boolean;
+  /** fsPromises.watch: scr_watch_async.c (with scr_watch.c). */
+  watchEvents: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
   cipher: boolean;
   ecdh: boolean;
+  argon2: boolean;
+  mlkem: boolean;
   dh: boolean;
   pki: boolean;
   ed25519: boolean;

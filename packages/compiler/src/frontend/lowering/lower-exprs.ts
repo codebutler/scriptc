@@ -1,3 +1,7 @@
+import {
+  lowerCjsExportsObjectCall,
+  lowerCjsExportsObjectRead,
+} from "./cjs-exports-object-value.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import {
   arrayClassMemberOwner,
@@ -83,7 +87,11 @@ import {
   locOf,
   orderedImportsOf,
 } from "../program.js";
-import { cjsExportChangesAfterInit, cjsNamespaceTargetOf } from "./cjs-inline-require.js";
+import {
+  cjsExportChangesAfterInit,
+  cjsNamespaceTargetOf,
+  cjsRuntimeOptionalExportStorage,
+} from "./cjs-inline-require.js";
 import { npmStaticLexerVisibleNames } from "../npm-static.js";
 import {
   ARRAY_CALLBACK_METHODS,
@@ -110,6 +118,7 @@ import { lowerYield } from "./lower-generators.js";
 import { unionWideningTags } from "../../ir/analysis.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { everyExprChild } from "../../ir/traverse.js";
+import { importMetaValue } from "./import-meta.js";
 import { declareContextLocal } from "./function-context.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./expressions/optional-chains.js";
 import { classToStringConversion, classUnionToString } from "./class-to-primitive.js";
@@ -200,6 +209,12 @@ export { lowerInstanceOf } from "./expressions/relational.js";
 export type FieldTarget =
   | { container: "dynamic"; obj: IrExpr; field: string; fieldType: IrType }
   | { container: "errorStackLimit"; obj: IrExpr; field: "stackTraceLimit"; fieldType: IrType }
+  | {
+      container: "errorPrepareStackTrace";
+      obj: IrExpr;
+      field: "prepareStackTrace";
+      fieldType: IrType;
+    }
   | { container: "errorCause"; obj: IrExpr; field: "cause"; fieldType: IrType }
   | { container: "class"; obj: IrExpr; className: string; field: string; fieldType: IrType }
   | { container: "record"; obj: IrExpr; shapeId: string; field: string; fieldType: IrType }
@@ -1048,6 +1063,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isBinaryExpression(expr))
     return lowerNewTargetComparison(lowerer, expr) ?? lowerer.lowerBinary(expr);
   if (ts.isCallExpression(expr)) {
+    // A member call of a module whose exports object some code takes calls
+    // through that object (cjs-exports-object-value.ts).
+    if (lowerer.cjsExportsObjects.size > 0) {
+      const viaObject = lowerCjsExportsObjectCall(lowerer, expr);
+      if (viaObject) return viaObject;
+    }
     // `h.return?.()` on a helper object: the method exists, so the
     // optional call is the call.
     const helperReturn = lowerHelperReturnCall(lowerer, expr);
@@ -1062,8 +1083,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isElementAccessExpression(expr)) return lowerer.lowerElementAccess(expr);
   if (ts.isConditionalExpression(expr)) return lowerTernary(lowerer, expr);
 
-  if (ts.isPropertyAccessExpression(expr))
+  if (ts.isPropertyAccessExpression(expr)) {
+    // A member of a module whose exports object some code takes reads
+    // through that object (cjs-exports-object-value.ts).
+    if (lowerer.cjsExportsObjects.size > 0) {
+      const viaObject = lowerCjsExportsObjectRead(lowerer, expr);
+      if (viaObject) return viaObject;
+    }
     return lowerNewTargetName(lowerer, expr) ?? lowerPropertyAccessExpr(lowerer, expr, loc);
+  }
 
   // Meta-properties, named: `new.target` reflects HOW a function was
   // invoked (compiled functions are never constructors of themselves —
@@ -1072,6 +1100,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // carry.
   if (isNewTarget(expr)) return lowerNewTarget(lowerer, expr);
   if (ts.isMetaProperty(expr)) {
+    if (expr.keywordToken === ts.SyntaxKind.ImportKeyword && expr.name.text === "meta")
+      return importMetaValue(lowerer, expr);
     const name =
       expr.keywordToken === ts.SyntaxKind.NewKeyword ? "new.target" : `import.${expr.name.text}`;
     lowerer.unsupported(
@@ -2742,6 +2772,25 @@ export function runtimeOptionalStorageOperand(
 ): IrExpr | null {
   let expr = node;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  // A CommonJS module member whose export the module may leave unassigned:
+  // its slot holds the undefined arm even though the checker's type for the
+  // import names none.
+  if (
+    ts.isPropertyAccessExpression(expr) &&
+    expr.questionDotToken === undefined &&
+    ts.isIdentifier(expr.name)
+  ) {
+    const storage = cjsRuntimeOptionalExportStorage(lowerer, expr);
+    if (storage !== null) {
+      const checked = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (
+        checked === null ||
+        (checked.kind === "union" && lowerer.armTag(checked.unionId, UNDEFINED_T) >= 0)
+      )
+        return null;
+      return storage;
+    }
+  }
   if (!ts.isIdentifier(expr)) return null;
   // Only storage that can actually receive an absent value without the
   // checker seeing it qualifies; other declared-optional bindings keep the
@@ -3097,6 +3146,7 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
   "AbortSignal",
   "Blob",
   "BroadcastChannel",
+  "CloseEvent",
   "CustomEvent",
   "DOMException",
   "Event",
@@ -3415,6 +3465,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "httpClientReq":
     case "secureCtx":
     case "fsWatcher":
+    case "statWatcher":
     case "cryptoHash":
     case "cryptoHmac":
     case "childStream":
@@ -3767,29 +3818,38 @@ export function cjsAccessorSnapshotStores(
 }
 
 /** The interned lifted-getter call both accessor-read paths share. */
-export function cjsAccessorCall(
+export function cjsAccessorValue(
   lowerer: Lowerer,
-  getter: ts.GetAccessorDeclaration,
+  accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
   loc: SrcLoc,
 ): IrExpr | null {
-  let fn = lowerer.cjsAccessorFns.get(getter);
+  let fn = lowerer.cjsAccessorFns.get(accessor);
   if (!fn) {
-    const closure = lowerer.lowerLambda(getter);
+    const closure = lowerer.lowerLambda(accessor);
     if (closure.kind !== "closure" || closure.type.kind !== "func") return null; // defensive
     fn = { fnName: closure.fnName, type: closure.type };
-    lowerer.cjsAccessorFns.set(getter, fn);
+    lowerer.cjsAccessorFns.set(accessor, fn);
   }
   // Lifted functions carry the closure ABI (an env parameter, even
   // capture-free) — the read calls through a zero-capture closure value,
   // the interned identity every lifted lambda uses.
-  const closureVal: IrExpr = {
+  return {
     kind: "closure",
     fnName: fn.fnName,
     captures: [],
     type: fn.type,
     loc,
   };
-  return { kind: "callValue", callee: closureVal, args: [], type: fn.type.ret, loc };
+}
+
+export function cjsAccessorCall(
+  lowerer: Lowerer,
+  getter: ts.GetAccessorDeclaration,
+  loc: SrcLoc,
+): IrExpr | null {
+  const closureVal = cjsAccessorValue(lowerer, getter, loc);
+  if (closureVal === null || closureVal.type.kind !== "func") return null;
+  return { kind: "callValue", callee: closureVal, args: [], type: closureVal.type.ret, loc };
 }
 
 /** A read of a catch binding — the caught analog of maybeNarrow. Where
@@ -4010,7 +4070,7 @@ export function staticRegexPatternOf(lowerer: Lowerer, e: ts.Expression): string
     return text.slice(1, text.lastIndexOf("/"));
   }
   if (
-    ts.isNewExpression(expr) &&
+    (ts.isNewExpression(expr) || ts.isCallExpression(expr)) &&
     ts.isIdentifier(expr.expression) &&
     expr.expression.text === "RegExp" &&
     lowerer.isStdlibGlobal(expr.expression, "RegExp") &&

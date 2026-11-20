@@ -154,6 +154,7 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   dgramSocket: 62,
   cryptoHash: 52,
   cryptoHmac: 53,
+  statWatcher: 103,
 };
 
 /** SCR_DYNH_NODE_ISLAND (scr_dyn.h): the handle a value an island made
@@ -1028,7 +1029,7 @@ export class LlDyn {
     const key = typeKey(t);
     const prior = this.mapDynOps.get(key);
     if (prior) return prior;
-    const name = `sc_map_dyn_${this.mapDynOps.size}`;
+    const name = this.host.contentSymbol("sc_map_dyn_", key);
     this.mapDynOps.set(key, name);
     this.host.journalAllocated?.(name, "dyn.collectionDynOps", [t]);
     const keyType = t.kind === "map" ? t.key : t.elem;
@@ -2290,7 +2291,7 @@ export class LlDyn {
     const matcherKey = preserveRefs ? `identity:${key}` : key;
     const existing = this.dynMatchers.get(matcherKey);
     if (existing) return existing;
-    const name = `sc_dm_${this.dynMatchers.size}`;
+    const name = this.host.contentSymbol("sc_dm_", matcherKey);
     this.dynMatchers.set(matcherKey, name);
     this.host.journalAllocated?.(name, "dyn.dynMatchHelper", [t, preserveRefs]);
     const codec = textCodecRecordClass(t, (id) => this.host.recordsById.get(id));
@@ -2899,7 +2900,7 @@ export class LlDyn {
     if (existing) return existing;
     const host = this.host;
     const S = host.sizeType;
-    const name = `sc_jsch_${this.jsonSchemas.size}`;
+    const name = this.host.contentSymbol("sc_jsch_", key);
     this.jsonSchemas.set(key, name);
     this.host.journalAllocated?.(name, "dyn.jsonSchema", [t]);
     let body: string;
@@ -3147,7 +3148,7 @@ export class LlDyn {
     if (existing) return existing;
     const host = this.host;
     const S = host.sizeType;
-    const base = `sc_rnames_${this.recordNameTables.size}`;
+    const base = this.host.contentSymbol("sc_rnames_", shapeId);
     const table = { names: `@${base}`, lens: `@${base}_lens` };
     this.recordNameTables.set(shapeId, table);
     this.host.journalAllocated?.(base, "dyn.recordNameTable", [shapeId]);
@@ -3180,7 +3181,7 @@ export class LlDyn {
     if (existing) return existing;
     if (!this.jsonSchemaSupported(t, new Set())) return null;
     const host = this.host;
-    const name = `sc_jp_${this.jsonParsers.size}`;
+    const name = this.host.contentSymbol("sc_jp_", key);
     this.jsonParsers.set(key, name);
     this.host.journalAllocated?.(name, "dyn.jsonParseHelper", [t]);
     const schema = this.jsonSchema(t);
@@ -3228,7 +3229,7 @@ export class LlDyn {
     const builderKey = `view:${typeKey(t)}`;
     const existing = this.dynBuilders.get(builderKey);
     if (existing) return existing;
-    const name = `sc_dva_${this.dynBuilders.size}`;
+    const name = this.host.contentSymbol("sc_dva_", builderKey);
     this.dynBuilders.set(builderKey, name);
     const host = this.host;
     const elem = t.elem;
@@ -3463,7 +3464,7 @@ export class LlDyn {
     const builderKey = sole ? `sole:${key}` : preserveRefs ? `identity:${key}` : key;
     const existing = this.dynBuilders.get(builderKey);
     if (existing) return existing;
-    const name = `sc_dc_${this.dynBuilders.size}`;
+    const name = this.host.contentSymbol("sc_dc_", builderKey);
     this.dynBuilders.set(builderKey, name);
     this.host.journalAllocated?.(
       name,
@@ -5055,7 +5056,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.toDynFns.get(key);
     if (existing) return existing;
-    const name = `sc_td_${this.toDynFns.size}`;
+    const name = this.host.contentSymbol("sc_td_", key);
     this.toDynFns.set(key, name);
     this.host.journalAllocated?.(name, "dyn.toDynHelper", [t]);
     const host = this.host;
@@ -5708,7 +5709,7 @@ export class LlDyn {
     const key = typeKey(inner);
     const existing = this.promiseDynAdapters.get(key);
     if (existing) return existing;
-    const name = `sc_pda_${this.promiseDynAdapters.size}`;
+    const name = this.host.contentSymbol("sc_pda_", key);
     this.promiseDynAdapters.set(key, name);
     this.host.journalAllocated?.(name, "dyn.promiseDynAdapterHelper", [inner]);
     const host = this.host;
@@ -7105,7 +7106,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.dynFuncThunks.get(key);
     if (existing) return existing;
-    const name = `sc_dfk_${this.dynFuncThunks.size}`;
+    const name = this.host.contentSymbol("sc_dfk_", key);
     this.dynFuncThunks.set(key, name);
     this.host.journalAllocated?.(name, "dyn.dynFuncThunkHelper", [t]);
     const host = this.host;
@@ -7248,8 +7249,17 @@ export class LlDyn {
       }
     });
     // VARIADIC (rest-marked) signatures: one extra trailing dyn-array
-    // param carries the call's arguments from index params.length on.
-    const rest = t.rest && !typedRest ? packTail(t.argumentsAll ? 0 : t.params.length) : null;
+    // param carries the call's arguments — all of them for an
+    // `argumentsAll` value, the surplus ones otherwise. A typed rest array
+    // is one of `params`, so an `argumentsAll` value that has one carries
+    // the hidden array after it.
+    const rest = !t.rest
+      ? null
+      : typedRest
+        ? t.argumentsAll === true
+          ? packTail(0)
+          : null
+        : packTail(t.argumentsAll === true ? 0 : t.params.length);
     // The closure CONSUMES its params (+1 each moved in).
     const fnp = B.tmp();
     const fn = B.tmp();
@@ -7305,7 +7315,7 @@ export class LlDyn {
   jsEntryThunk(target: string, params: readonly IrType[], ret: IrType): string {
     const existing = this.jsEntryThunks.get(target);
     if (existing) return existing;
-    const name = `sc_jt_${this.jsEntryThunks.size}`;
+    const name = this.host.contentSymbol("sc_jt_", target);
     this.jsEntryThunks.set(target, name);
     this.host.journalAllocated?.(name, "dyn.jsEntryThunk", [target, params, ret]);
     const host = this.host;
@@ -7549,7 +7559,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.unnamedFuncBoxes.get(key);
     if (existing) return existing;
-    const name = `sc_dfu_${this.unnamedFuncBoxes.size}`;
+    const name = this.host.contentSymbol("sc_dfu_", key);
     this.unnamedFuncBoxes.set(key, name);
     this.host.journalAllocated?.(name, "dyn.unnamedFuncBoxHelper", [t]);
     // The first box defines the table and its lookup.
@@ -7581,7 +7591,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.dynFuncBoxes.get(key);
     if (existing) return existing;
-    const name = `sc_dfb_${this.dynFuncBoxes.size}`;
+    const name = this.host.contentSymbol("sc_dfb_", key);
     this.dynFuncBoxes.set(key, name);
     this.host.journalAllocated?.(name, "dyn.dynFuncBoxHelper", [t]);
     const host = this.host;
@@ -7694,7 +7704,7 @@ export class LlDyn {
       this.host.journalBuilt?.();
       return null;
     }
-    const name = `sc_dml_${this.messageListeners.size}`;
+    const name = this.host.contentSymbol("sc_dml_", key);
     this.messageListeners.set(key, name);
     this.host.journalAllocated?.(name, "dyn.messageListenerHelper", [t]);
     const B = new BlockBuilder();
@@ -7788,7 +7798,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.messageReaders.get(key);
     if (existing) return existing;
-    const name = `sc_dmr_${this.messageReaders.size}`;
+    const name = this.host.contentSymbol("sc_dmr_", key);
     this.messageReaders.set(key, name);
     this.host.journalAllocated?.(name, "dyn.messageReaderHelper", [t]);
     const host = this.host;
@@ -7973,7 +7983,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.dynFuncAdapters.get(key);
     if (existing) return existing;
-    const name = `sc_dfa_${this.dynFuncAdapters.size}`;
+    const name = this.host.contentSymbol("sc_dfa_", key);
     this.dynFuncAdapters.set(key, name);
     this.host.journalAllocated?.(name, "dyn.dynFuncAdapterHelper", [t]);
     const host = this.host;
