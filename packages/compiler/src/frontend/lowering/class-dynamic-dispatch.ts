@@ -7253,9 +7253,13 @@ export class ClassDynamicDispatch {
           }
         : receiver;
     const helper = this.bagPrototypeHelper(lowerer, current, loc);
-    return helper
-      ? { kind: "call", callee: helper.name, args: [arg], type: DYN, loc }
-      : classPrototypeData(lowerer, current, loc, arg);
+    if (helper) return { kind: "call", callee: helper.name, args: [arg], type: DYN, loc };
+    // A class below a generic base can have an inherited prototype without
+    // prototype data of its own. Its property bag and its view share it.
+    return (
+      classPrototypeData(lowerer, current, loc, arg) ??
+      (hasClassPrototypeData(current) ? this.inheritedPrototype(lowerer, current, loc) : null)
+    );
   }
 
   /** `%class.bagPrototype:<class>(this)`: the prototype data of the most
