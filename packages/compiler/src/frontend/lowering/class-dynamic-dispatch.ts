@@ -460,6 +460,13 @@ export function classInstanceOf(
 ): IrExpr {
   const name = `%dyn.class.${classValue ? "valueInstanceof" : "instanceof"}:${info.def.name}`;
   lowerer.shareHelper(name);
+  const call: IrExpr = {
+    kind: "call",
+    callee: name,
+    args: [value, ...(classValue ? [classValue] : [])],
+    type: BOOL,
+    loc,
+  };
   const params = [
     { localId: "value", name: "value", type: DYN },
     ...(classValue ? [{ localId: "class", name: "class", type: classValue.type }] : []),
@@ -472,6 +479,9 @@ export function classInstanceOf(
       loc,
       classValue ? varRef("class", classValue.type, loc) : undefined,
     );
+    // Reflecting a prototype method can recursively lower another instanceof
+    // for this class. That call publishes the helper for the same prototype.
+    if (lowerer.liftedFnNamed(name) !== undefined) return call;
     const body: IrStmt[] = prototype
       ? [
           // In a program that declares a class extending Date, a Date can
@@ -559,13 +569,7 @@ export function classInstanceOf(
       loc,
     });
   }
-  return {
-    kind: "call",
-    callee: name,
-    args: [value, ...(classValue ? [classValue] : [])],
-    type: BOOL,
-    loc,
-  };
+  return call;
 }
 
 /** `value` is the parameter itself, possibly through js.fromDyn. */
