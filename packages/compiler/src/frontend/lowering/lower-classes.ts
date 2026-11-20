@@ -2386,6 +2386,11 @@ export function collectClassShapeInner(
   },
 ): void {
   {
+    // A concrete generic layout is collected on demand. An ordinary
+    // declaration gets its checked-dynamic fields on the auto-tier flush
+    // retry, but a failed specialization is cached as poisoned immediately.
+    const checkDynFieldPolicy =
+      !lowerer.liftDynFieldPolicy && (inst === undefined || lowerer.tierMode !== "auto");
     // Anonymous class EXPRESSIONS are ordinary (their .name follows
     // NamedEvaluation — jsNameOverride carries it). The one legal
     // nameless class DECLARATION is `export default class {}` — its
@@ -3297,7 +3302,7 @@ export function collectClassShapeInner(
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           if (
             type.kind === "dyn" &&
-            !lowerer.liftDynFieldPolicy &&
+            checkDynFieldPolicy &&
             !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
             !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name)) &&
             (member.type !== undefined ||
@@ -3908,7 +3913,7 @@ export function collectClassShapeInner(
         // (Lowerer.liftDynFieldPolicy).
         if (
           type.kind === "dyn" &&
-          !lowerer.liftDynFieldPolicy &&
+          checkDynFieldPolicy &&
           !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
           !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name))
         ) {
@@ -4062,7 +4067,7 @@ export function collectClassShapeInner(
           // The class-field dyn rule verbatim (KEEP NARROW).
           if (
             type.kind === "dyn" &&
-            !lowerer.liftDynFieldPolicy &&
+            checkDynFieldPolicy &&
             !lowerer.classFieldStoresDyn(lowerer.typeOf(p))
           ) {
             lowerer.dynFieldPolicyFence(
