@@ -592,7 +592,9 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   if (receiverIr !== null && ((indexedArms !== null && !jsSource) || jsSequenceReceiver)) {
     let recv = lowerer.lowerExpr(expr.expression);
     if (recv.type.kind === "dyn") recv = lowerer.coerceInto(expr.expression, recv, receiverIr);
-    const arms = indexedUnionArms(lowerer, recv.type);
+    const arms = indexedArms
+      ? indexedUnionArms(lowerer, recv.type, true)
+      : indexedUnionArms(lowerer, recv.type);
     if (arms) {
       const index = lowerOptionalNumber(
         lowerer,

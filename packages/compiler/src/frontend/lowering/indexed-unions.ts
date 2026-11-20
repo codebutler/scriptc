@@ -2,6 +2,8 @@ import { keyedHelperName } from "./stable-names.js";
 import { helperLoc, varRef } from "../../ir/build.js";
 import {
   BOOL,
+  DYN,
+  STRING,
   BYTES_ELEMENT_SIZE,
   F64,
   VOID,
@@ -34,17 +36,33 @@ export interface IndexedArm {
   type: IrType & ({ kind: "bytes" } | { kind: "array" });
 }
 
-/** The arms of a union whose every arm is a typed array or a `number[]`,
- * or null. Unions with any other arm (undefined included) are not
- * indexed unions: their reads need a narrowing first. */
-export function indexedUnionArms(lowerer: Lowerer, type: IrType): IndexedArm[] | null {
+interface IndexedReadArm {
+  tag: number;
+  type: IndexedArm["type"] | Extract<IrType, { kind: "nullT" | "undefinedT" }>;
+}
+
+/** Classify indexed storage. A read with a narrowed checker type can still
+ * see a nullish storage tag and must throw after evaluating the index. */
+export function indexedUnionArms(lowerer: Lowerer, type: IrType): IndexedArm[] | null;
+export function indexedUnionArms(
+  lowerer: Lowerer,
+  type: IrType,
+  nullableRead: true,
+): IndexedReadArm[] | null;
+export function indexedUnionArms(
+  lowerer: Lowerer,
+  type: IrType,
+  nullableRead = false,
+): IndexedReadArm[] | null {
   if (type.kind !== "union") return null;
   const arms = lowerer.unions.get(type.unionId)?.arms;
   if (!arms || arms.length < 2) return null;
-  const result: IndexedArm[] = [];
+  const result: IndexedReadArm[] = [];
   for (const [tag, arm] of arms.entries()) {
     if (arm.kind === "bytes") result.push({ tag, type: arm });
     else if (arm.kind === "array" && arm.elem.kind === "f64") result.push({ tag, type: arm });
+    else if (nullableRead && (arm.kind === "nullT" || arm.kind === "undefinedT"))
+      result.push({ tag, type: arm });
     else return null;
   }
   return result;
@@ -56,20 +74,30 @@ export function allBytesArms(arms: readonly IndexedArm[]): boolean {
   return arms.every((arm) => arm.type.kind === "bytes");
 }
 
-type ArmBody = (receiver: IrExpr, arm: IndexedArm, args: readonly IrExpr[]) => IrStmt[];
+function indexedArmValue(
+  receiver: IrExpr,
+  unionId: string,
+  info: IndexedReadArm,
+  loc: SrcLoc,
+): IrExpr {
+  const type = info.type;
+  if (type.kind === "nullT" || type.kind === "undefinedT")
+    return { kind: "unitLit", unit: type.kind === "nullT" ? "null" : "undefined", type, loc };
+  return { kind: "unionNarrow", unionId, tag: info.tag, value: receiver, type, loc };
+}
 
 /** The helper `name(u, ...args)`: for each arm but the last, a tag test
  * that runs the arm's statements; the last arm's statements run without a
  * test (the union holds one of its arms). */
-function dispatchHelper(
+function dispatchHelper<A extends IndexedReadArm>(
   lowerer: Lowerer,
   key: string,
   prefix: string,
   union: IrType,
-  arms: readonly IndexedArm[],
+  arms: readonly A[],
   params: readonly { name: string; type: IrType }[],
   returnType: IrType,
-  body: ArmBody,
+  body: (receiver: IrExpr, arm: A, args: readonly IrExpr[]) => IrStmt[],
   loc: SrcLoc,
 ): string {
   const existing = lowerer.arrHofHelpers.get(key);
@@ -82,14 +110,7 @@ function dispatchHelper(
   const args = params.map((p) => varRef(`${p.name}.0`, p.type, at));
   const stmts: IrStmt[] = [];
   arms.forEach((arm, i) => {
-    const receiver: IrExpr = {
-      kind: "unionNarrow",
-      unionId: union.unionId,
-      tag: arm.tag,
-      value: u,
-      type: arm.type,
-      loc: at,
-    };
+    const receiver = indexedArmValue(u, union.unionId, arm, at);
     const armStmts = body(receiver, arm, args);
     if (i === arms.length - 1) {
       stmts.push(...armStmts);
@@ -136,7 +157,7 @@ const returning = (value: IrExpr, loc: SrcLoc): IrStmt[] => [{ kind: "return", v
 export function lowerIndexedUnionRead(
   lowerer: Lowerer,
   receiver: IrExpr,
-  arms: readonly IndexedArm[],
+  arms: readonly IndexedReadArm[],
   index: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
@@ -150,13 +171,7 @@ export function lowerIndexedUnionRead(
     arms,
     [{ name: "i", type: F64 }],
     resultT,
-    (arm, info, [i]) =>
-      returning(
-        info.type.kind === "bytes"
-          ? lowerSafeBytesRead(lowerer, arm, i!, loc)
-          : lowerSafeIndexRead(lowerer, arm, i!, loc)!,
-        loc,
-      ),
+    (arm, _info, [i]) => returning(readElement(lowerer, arm, i!, false, loc), loc),
     loc,
   );
   const numeric = indexedUnionNumberHelper(lowerer, receiver.type, arms, loc);
@@ -169,18 +184,45 @@ export function lowerIndexedUnionRead(
 export function lowerIndexedUnionNumberRead(
   lowerer: Lowerer,
   receiver: IrExpr,
-  arms: readonly IndexedArm[],
+  arms: readonly IndexedReadArm[],
   index: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
   if (inlineDispatch(receiver, [index]))
-    return inlineArms(receiver, arms, F64, (arm, info) => numberRead(arm, info, index, loc), loc);
+    return inlineArms(
+      receiver,
+      arms,
+      F64,
+      (arm) => readElement(lowerer, arm, index, true, loc),
+      loc,
+    );
   const name = indexedUnionNumberHelper(lowerer, receiver.type, arms, loc);
   return { kind: "call", callee: name, args: [receiver, index], type: F64, loc };
 }
 
-function numberRead(arm: IrExpr, info: IndexedArm, index: IrExpr, loc: SrcLoc): IrExpr {
-  return info.type.kind === "bytes"
+function readElement(
+  lowerer: Lowerer,
+  arm: IrExpr,
+  index: IrExpr,
+  numeric: boolean,
+  loc: SrcLoc,
+): IrExpr {
+  if (arm.type.kind === "nullT" || arm.type.kind === "undefinedT") {
+    // The caller evaluates the numeric key before the nullish property read throws.
+    const read: IrExpr = {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(arm, DYN),
+      key: { kind: "toString", operand: index, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+    return lowerer.coerceToExpected(read, numeric ? F64 : lowerer.withUndefinedArm(F64));
+  }
+  if (!numeric)
+    return arm.type.kind === "bytes"
+      ? lowerSafeBytesRead(lowerer, arm, index, loc)
+      : lowerSafeIndexRead(lowerer, arm, index, loc)!;
+  return arm.type.kind === "bytes"
     ? {
         kind: "bytesIntrinsic",
         method: "get",
@@ -196,7 +238,7 @@ function numberRead(arm: IrExpr, info: IndexedArm, index: IrExpr, loc: SrcLoc): 
 function indexedUnionNumberHelper(
   lowerer: Lowerer,
   union: IrType,
-  arms: readonly IndexedArm[],
+  arms: readonly IndexedReadArm[],
   loc: SrcLoc,
 ): string {
   return dispatchHelper(
@@ -207,7 +249,7 @@ function indexedUnionNumberHelper(
     arms,
     [{ name: "i", type: F64 }],
     F64,
-    (arm, info, [i]) => returning(numberRead(arm, info, i!, loc), loc),
+    (arm, _info, [i]) => returning(readElement(lowerer, arm, i!, true, loc), loc),
     loc,
   );
 }
@@ -546,23 +588,16 @@ function rebinds(e: IrExpr, reads: readonly IrExpr[]): boolean {
 
 /** The in-place form of a dispatch: a ternary chain over the arms' tags,
  * the last arm untested. */
-function inlineArms(
+function inlineArms<A extends IndexedReadArm>(
   receiver: IrExpr,
-  arms: readonly IndexedArm[],
+  arms: readonly A[],
   type: IrType,
-  arm: (narrowed: IrExpr, info: IndexedArm) => IrExpr,
+  arm: (narrowed: IrExpr, info: A) => IrExpr,
   loc: SrcLoc,
 ): IrExpr {
   const union = receiver.type;
   if (union.kind !== "union") throw new Error("indexed-union dispatch over a non-union");
-  const narrowed = (info: IndexedArm): IrExpr => ({
-    kind: "unionNarrow",
-    unionId: union.unionId,
-    tag: info.tag,
-    value: receiver,
-    type: info.type,
-    loc,
-  });
+  const narrowed = (info: A) => indexedArmValue(receiver, union.unionId, info, loc);
   let result = arm(narrowed(arms[arms.length - 1]!), arms[arms.length - 1]!);
   for (let i = arms.length - 2; i >= 0; i--) {
     const info = arms[i]!;
