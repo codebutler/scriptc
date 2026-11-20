@@ -51,6 +51,24 @@ async function counts(): Promise<void> {
   }
 }
 
+async function nullableVoid(value: Promise<void> | null | undefined) {
+  const settled: unknown = await value;
+  log.push(settled === null ? "null" : settled === undefined ? "undefined" : "other");
+}
+async function checkNullableVoid() {
+  const marker = new Error("rejected");
+  const pending = nullableVoid(null);
+  log.push("before-null-continuation");
+  await pending;
+  await nullableVoid(undefined);
+  await nullableVoid(Promise.resolve());
+  try {
+    await nullableVoid(Promise.reject(marker));
+  } catch (error) {
+    log.push(error === marker ? "same rejection" : "other rejection");
+  }
+}
+checkNullableVoid();
 ticker(12);
 awaitOnce(0);
 awaitOnce(1);

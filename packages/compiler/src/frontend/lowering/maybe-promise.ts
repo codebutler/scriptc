@@ -128,8 +128,8 @@ export function lowerMaybePromiseAwait(
   value: IrExpr,
   mp: MaybePromiseUnion,
   loc: SrcLoc,
+  resultT = lowerer.mapTypeOf(lowerer.typeOf(expr)),
 ): IrExpr {
-  const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr));
   if (!resultT || resultT.kind === "void" || resultT.kind === "dyn" || isUnitType(resultT)) {
     lowerer.unsupported(
       "SC1090",

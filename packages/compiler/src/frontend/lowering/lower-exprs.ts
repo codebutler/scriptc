@@ -913,9 +913,13 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (value.type.kind === "union") {
       const def = lowerer.unions.get(value.type.unionId);
       const promiseTag = def ? def.arms.findIndex((a) => a.kind === "promise") : -1;
-      if (def && promiseTag >= 0 && def.arms.every((a, i) => i === promiseTag || isUnitType(a))) {
-        const promiseArm = def.arms[promiseTag]!;
-        const inner = promiseArm.kind === "promise" ? promiseArm.inner : VOID;
+      const promiseArm = def?.arms[promiseTag];
+      if (
+        def &&
+        promiseArm?.kind === "promise" &&
+        def.arms.every((a, i) => i === promiseTag || isUnitType(a))
+      ) {
+        const inner = promiseArm.inner;
         const units = def.arms.filter(isUnitType);
         // A checked-dynamic inner: the whole operand is a dyn value (the
         // promise boxes by reference, the unit as itself), and the dyn
@@ -956,12 +960,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         if (inner.kind === "void" && units.every((u) => u.kind === "undefinedT")) {
           type = VOID;
         } else if (inner.kind === "void") {
-          // `Promise<void> | null`: the result would mix undefined and
-          // null units with no non-unit arm — degenerate; keep it out.
-          lowerer.unsupported(
-            "SC1090",
+          // A fulfilled void promise yields undefined. A null operand
+          // yields null after its own microtask turn. Preserve both units.
+          return lowerMaybePromiseAwait(
+            lowerer,
             expr,
-            `awaiting '${lowerer.fmt(value.type)}' (narrow the null away first)`,
+            value,
+            { def, promiseTag, promise: promiseArm },
+            loc,
+            unitOnlyUnion(lowerer.unions),
           );
         } else {
           const arms = [inner, ...units];
