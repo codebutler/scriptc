@@ -263,7 +263,12 @@ import {
   lowerProcessBuiltinModuleNamespace,
 } from "./builtins/process.js";
 import { recordMayKeepSource, recordSourceTest, throughRecordSource } from "./record-sources.js";
-import { answerLinkedCopies, recordStringCall, registerLinkedHelper } from "./record-links.js";
+import {
+  answerLinkedCopies,
+  recordLinksInto,
+  recordStringCall,
+  registerLinkedHelper,
+} from "./record-links.js";
 import { lowerPrototypeReflectionCall, lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
@@ -12257,74 +12262,81 @@ function lowerObjectEnumerationOverRecord(
     // A linked copy lists its source's fields. When one of them cannot
     // flow into the result, the copy answers as a kept source does: its
     // checked view's values, checked into the result (which throws).
-    registerLinkedHelper(lowerer, fn, argIr.shapeId, "custom");
-    lowerer.linkedHelperFinalizers.push(() => {
-      // A compose step consumes one link in the value's finite chain of
-      // source copies. Share its continuation by source shape: expanding
-      // every possible path here duplicates the same field walks.
-      const continuations = new Map<string, string>([[argIr.shapeId, fn.name]]);
-      const sourceAnswer = (composed: IrExpr & { kind: "varRef" }): IrStmt[] => {
-        const sourceType = composed.type as IrType & { kind: "record" };
-        const id = sourceType.shapeId;
-        let name = continuations.get(id);
-        if (name === undefined) {
-          name = keyedHelperName(lowerer, `%obj.${member}.source`, `${key}:${id}`);
-          continuations.set(id, name);
-          const receiver = varRef("r.0", sourceType, loc);
-          const source: IrFunction = {
-            name,
-            params: [{ localId: "r.0", name: "r", type: sourceType }],
-            returnType: resultT,
-            locals: [
-              { id: "r.0", name: "r", type: sourceType, mutable: false },
-              { id: "out.0", name: "out", type: resultT, mutable: false },
-            ],
-            body: [],
-            loc,
-          };
-          const view: IrExpr = { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc };
-          const viewAnswer: IrStmt = {
-            kind: "return",
-            value: {
-              kind: "dynCheck",
-              value: {
-                kind: "libCall",
-                fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
-                args: [view],
-                type: DYN,
-                loc,
-              },
-              type: resultT,
-              loc,
-            },
-            loc,
-          };
-          let fits = true;
-          const walk = fieldWalk(receiver, lowerer.shapes.get(id)!, "out.0", () => {
-            fits = false;
-            return viewAnswer;
-          });
-          source.body = fits ? walk : [viewAnswer];
-          if (fits && recordMayKeepSource(lowerer, sourceType))
-            source.body.unshift({
-              kind: "if",
-              cond: recordSourceTest(receiver, loc),
-              then: [viewAnswer],
-              else_: null,
-              loc,
-            });
-          answerLinkedCopies(lowerer, source, id, sourceAnswer);
-          lowerer.liftedFns.push(source);
-        }
-        return [
-          {
-            kind: "return",
-            value: { kind: "call", callee: name, args: [composed], type: resultT, loc },
+    // Compose follows the finite chain of source copies. Build the field
+    // walk once per shape, including any projections its values require.
+    const continuations = new Map<string, IrFunction>([[argIr.shapeId, fn]]);
+    const buildSource = (id: string): IrFunction => {
+      const sourceType: IrType & { kind: "record" } = { kind: "record", shapeId: id };
+      const name = keyedHelperName(lowerer, `%obj.${member}.source`, `${key}:${id}`);
+      const receiver = varRef("r.0", sourceType, loc);
+      const source: IrFunction = {
+        name,
+        params: [{ localId: "r.0", name: "r", type: sourceType }],
+        returnType: resultT,
+        locals: [
+          { id: "r.0", name: "r", type: sourceType, mutable: false },
+          { id: "out.0", name: "out", type: resultT, mutable: false },
+        ],
+        body: [],
+        loc,
+      };
+      const view: IrExpr = { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc };
+      const viewAnswer: IrStmt = {
+        kind: "return",
+        value: {
+          kind: "dynCheck",
+          value: {
+            kind: "libCall",
+            fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
+            args: [view],
+            type: DYN,
             loc,
           },
-        ];
+          type: resultT,
+          loc,
+        },
+        loc,
       };
-      answerLinkedCopies(lowerer, fn, argIr.shapeId, sourceAnswer);
+      let fits = true;
+      const walk = fieldWalk(receiver, lowerer.shapes.get(id)!, "out.0", () => {
+        fits = false;
+        return viewAnswer;
+      });
+      source.body = fits ? walk : [viewAnswer];
+      if (fits && recordMayKeepSource(lowerer, sourceType))
+        source.body.unshift({
+          kind: "if",
+          cond: recordSourceTest(receiver, loc),
+          then: [viewAnswer],
+          else_: null,
+          loc,
+        });
+      return source;
+    };
+    registerLinkedHelper(lowerer, fn, argIr.shapeId, "custom", () => {
+      for (const id of continuations.keys()) {
+        for (const link of recordLinksInto(lowerer, id)) {
+          if (continuations.has(link.from)) continue;
+          const source = buildSource(link.from);
+          continuations.set(link.from, source);
+          lowerer.liftedFns.push(source);
+        }
+      }
+    });
+    lowerer.linkedHelperFinalizers.push(() => {
+      for (const [id, continuation] of continuations) {
+        answerLinkedCopies(lowerer, continuation, id, (composed) => {
+          const sourceType = composed.type as IrType & { kind: "record" };
+          const callee = continuations.get(sourceType.shapeId)!.name;
+          return [
+            {
+              kind: "return",
+              value: { kind: "call", callee, args: [composed], type: resultT, loc },
+              loc,
+            },
+          ];
+        });
+      }
     });
   }
   const callee = helper;

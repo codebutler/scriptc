@@ -161,6 +161,7 @@ export interface LinkedHelper {
   readonly fn: IrFunction;
   readonly shapeId: string;
   readonly kind: LinkedHelperKind;
+  readonly discoverSources?: () => void;
 }
 
 /** Registers `fn` (whose first parameter is a record of `shapeId`). */
@@ -169,8 +170,14 @@ export function registerLinkedHelper(
   fn: IrFunction,
   shapeId: string,
   kind: LinkedHelperKind,
+  discoverSources?: () => void,
 ): void {
-  lowerer.linkedHelpers.push({ fn, shapeId, kind });
+  lowerer.linkedHelpers.push({
+    fn,
+    shapeId,
+    kind,
+    ...(discoverSources ? { discoverSources } : {}),
+  });
 }
 
 /** Makes `fn` (whose first parameter is a record of `shapeId`) first
@@ -245,6 +252,14 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
   )
     return;
   const lifted = lowerer.liftedFns.length;
+  // An enumerated field can itself need a width projection. Discover those
+  // conversions before pruning link pairs, assigning their compose bodies,
+  // or installing tests of the pairs in any helper.
+  let previousSize: number;
+  do {
+    previousSize = lowerer.recordLinks.size;
+    for (const helper of lowerer.linkedHelpers) helper.discoverSources?.();
+  } while (lowerer.recordLinks.size !== previousSize);
   const scan = scanModule(lowerer, [...functions, ...lowerer.liftedFns]);
   const sourced = scan.sourced;
   keepObservedLinks(lowerer, scan.exposed, [...functions, ...lowerer.liftedFns]);

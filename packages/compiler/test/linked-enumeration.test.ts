@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { compile, deserializeModule } from "../src/index.js";
+import { compile, deserializeModule, validateModule } from "../src/index.js";
 import { everyStmtList } from "../src/ir/traverse.js";
 
 test("enumeration emits only the direct links of each receiver shape", async () => {
@@ -16,6 +16,15 @@ test("enumeration emits only the direct links of each receiver shape", async () 
     const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
     if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
     const mod = deserializeModule(await readFile(outPath, "utf8"));
+    const link = mod.recordLinks?.[0];
+    if (!link) throw new Error("expected a record link");
+    const invalid = {
+      ...mod,
+      recordLinks: [...(mod.recordLinks ?? []), { ...link, compose: "%missing" }],
+    };
+    const errors = validateModule(invalid).map((error) => error.message);
+    expect(errors).toContain(`duplicate record link pair ${link.pair}`);
+    expect(errors).toContain(`record link ${link.pair} has no compose function "%missing"`);
     const helpers = mod.functions.filter((fn) => /^%obj\.(entries|values)\./.test(fn.name));
     expect(helpers.length).toBeGreaterThan(0);
     for (const fn of helpers) {

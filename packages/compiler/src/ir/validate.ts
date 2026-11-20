@@ -702,6 +702,34 @@ export function validateModule(mod: IrModule): IrValidationError[] {
   const noLoc: SrcLoc = { file: mod.sourceFile, start: 0, end: 0 };
   const recordsById = new Map<string, IrRecordShape>();
   const recordIds = new Set((mod.records ?? []).map((record) => record.id));
+  const linkPairs = new Set<number>();
+  for (const link of mod.recordLinks ?? []) {
+    if (linkPairs.has(link.pair))
+      errors.push({ message: `duplicate record link pair ${link.pair}`, loc: moduleLoc });
+    linkPairs.add(link.pair);
+    const composer = functionsByName.get(link.compose);
+    if (!composer) {
+      errors.push({
+        message: `record link ${link.pair} has no compose function "${link.compose}"`,
+        loc: moduleLoc,
+      });
+      continue;
+    }
+    const [copy, source] = composer.params;
+    if (
+      composer.params.length !== 2 ||
+      copy?.type.kind !== "record" ||
+      copy.type.shapeId !== link.to ||
+      source?.type.kind !== "record" ||
+      source.type.shapeId !== link.from ||
+      composer.returnType.kind !== "record" ||
+      composer.returnType.shapeId !== link.from
+    )
+      errors.push({
+        message: `record link ${link.pair} has an incompatible compose function "${link.compose}"`,
+        loc: composer.loc,
+      });
+  }
   const recordValidation = new Map<string, RecordValidation>();
   for (const rec of mod.records ?? []) {
     if (recordsById.has(rec.id)) {
