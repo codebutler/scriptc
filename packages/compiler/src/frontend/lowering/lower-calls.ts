@@ -82,7 +82,7 @@ import {
   lowerFsStreamMethodCall,
 } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
-import { withoutParentheses } from "../outer-expressions.js";
+import { withoutParentheses, withoutParenthesesAsSatisfies } from "../outer-expressions.js";
 import {
   isZlibStreamMember,
   lowerPromisifiedZlibCall,
@@ -393,6 +393,8 @@ import {
   lowerClassDescriptorRead,
 } from "./class-descriptors.js";
 import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
+import { viewTargetOf } from "./view-literals.js";
+import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
@@ -11162,6 +11164,22 @@ function lowerObjectStaticCall(
       if (destination?.kind === "array") {
         const value = lowerer.lowerArrayLiteral(literal, destination);
         return lowerNativeFreeze(lowerer, "array.freeze", value, locOf(call));
+      }
+    }
+    // An accessor literal returned through a live interface view keeps its
+    // descriptors on the dynamic object itself. Freeze that object before
+    // handing it to the consumer; boxing a native record would read getters.
+    const literalView = withoutParenthesesAsSatisfies(argNode);
+    if (
+      ts.isObjectLiteralExpression(literalView) &&
+      literalView.properties.nodes.some(
+        (prop) => ts.isGetAccessorDeclaration(prop) || ts.isSetAccessorDeclaration(prop),
+      )
+    ) {
+      const context = lowerer.checker.getContextualType(call);
+      if (context && viewTargetOf(lowerer, context)) {
+        const value = lowerDynObjectLiteral(lowerer, literalView, undefined, false, true);
+        return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
       }
     }
     const value =
