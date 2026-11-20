@@ -1182,6 +1182,13 @@ function internGenericInstance(
     }
     const tsBindings = inferred?.tsBindings ?? opts?.tsBindings ?? new Map<ts.Symbol, ts.Type>();
     const bindings = inferred?.bindings ?? makeBindings(tsBindings);
+    // The method belongs to one specialized receiver. Retain its literal
+    // class arguments in the same map that recorded method alias and
+    // pinned-key resolutions during inference.
+    const ownerBindings = info.member?.cls.genericInstance?.tsBindings;
+    if (ownerBindings) {
+      for (const [parameter, type] of ownerBindings) tsBindings.set(parameter, type);
+    }
     const rendered = info.typeParams
       .map((tp) => {
         // A literal-bound keyof parameter renders its literal — the
@@ -1813,11 +1820,7 @@ export function lowerGenericInstance(
   lowerer.typeParamBindings = clsBindings
     ? new Map([...clsBindings, ...inst.bindings])
     : inst.bindings;
-  // The ts-level bindings ride along: `T[K]` and literal-keyed `o[k]`
-  // reads inside the body resolve through the bound CHECKER types
-  // (typeParamTsResolver). Generic-class instantiations carry no
-  // ts-level bindings (their type arguments widened at the reference),
-  // so only the method instantiation's own map installs.
+  // The method instance also carries its receiver's checker bindings.
   const prevTsBindings = lowerer.typeParamTsBindings;
   lowerer.typeParamTsBindings = inst.tsBindings ?? null;
   // Implicit-any instances thread their param bindings through typeOf
