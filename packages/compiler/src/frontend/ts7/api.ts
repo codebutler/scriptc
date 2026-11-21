@@ -22,6 +22,9 @@ export class Ts7Api {
     }
   }
 
+  supportsProjectConfigUpdates(): boolean {
+    return this.session.usesTs71Protocol();
+  }
   parseConfigFile(file: string): Ts7ConfigData {
     return this.session.parseConfigFile(file);
   }

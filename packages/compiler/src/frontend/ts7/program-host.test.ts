@@ -11,6 +11,8 @@ import {
   type Ts7ProjectLineage,
 } from "./program-host.js";
 import { ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "./enums.js";
+import { loadProgram } from "../program-node.js";
+import { ts7TestServers } from "./test-servers.js";
 import { tsgoPath } from "./session-path.js";
 
 const directories: string[] = [];
@@ -318,6 +320,28 @@ test("one lineage updates a shared project and keeps unchanged syntax trees", ()
   host.releaseLineage(lineage);
   expect(connection.fs.readFile(config)).toBeNull();
 });
+
+test.for(ts7TestServers())(
+  "declaration siblings discovered during loading reach the program ($name)",
+  (server) => {
+    const { directory, entry } = fixture();
+    const sibling = join(directory, "value.mjs");
+    writeFileSync(entry, 'import { value } from "./value.mjs"; console.log(value());');
+    writeFileSync(join(directory, "value.d.mts"), "export declare function value(): number;");
+    writeFileSync(sibling, "export function value() { return 42; }");
+    vi.stubEnv("SCRIPTC_CHECKER", server.executable);
+    try {
+      const load = loadProgram(entry);
+      try {
+        expect(load.program.getSourceFile(sibling)?.text).toContain("return 42");
+      } finally {
+        load.dispose();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  },
+);
 
 test("failed program updates retire their config and can be retried", () => {
   const { directory, entry } = fixture();

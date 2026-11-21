@@ -305,12 +305,17 @@ export class Ts7Host {
     programOwnsHost = false,
     /** The load's shared config: its rebuilds update one project instead of
      * opening a new one. The load releases it (releaseLineage). */
-    lineage?: Ts7ProjectLineage,
+    loadLineage?: Ts7ProjectLineage,
   ): Ts7Program {
     this.ensureOpen();
     const roots = rootNames.map((r) => resolve(r));
     const first = roots[0];
     if (first === undefined) throw new InternalCompilerError("ts7 createProgram: no root files");
+    // The 7.0 server keeps the first root list when a virtual project config
+    // changes. Give each rebuild its own project there, so newly discovered
+    // JavaScript implementations reach the checker and lowerer.
+    const lineage =
+      loadLineage && this.api.supportsProjectConfigUpdates() ? loadLineage : undefined;
     const configPath =
       lineage?.configPath ?? join(dirname(first), `__scriptc-ts7-${nextConfigId++}.tsconfig.json`);
     if (lineage !== undefined) lineage.configPath = configPath;
