@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { Ts7Api as ConnectedTs7Api } from "./api.js";
-import { checkerBackend, hostTscTsExecutable } from "./checker-backend.js";
+import { checkerBackend, hostTscTsExecutable, selectedTsgoExecutable } from "./checker-backend.js";
 import { Ts7RpcClient } from "./rpc-client.js";
 import { TS7_FILE_SYSTEM_CALLBACKS, type Ts7FileSystem } from "./rpc-filesystem.js";
 import { spawnTs7Wire } from "./rpc-process.js";
@@ -17,7 +17,9 @@ const { default: getExePath } = require(join(packageRoot, "lib/getExePath.js")) 
  * The executable is tsc-ts's (`hostTscTsExecutable`), or tsgo's with
  * `SCRIPTC_CHECKER=tsgo`. */
 export function ts7Executable(): string {
-  return checkerBackend() === "tsgo" ? getExePath() : hostTscTsExecutable();
+  return checkerBackend() === "tsgo"
+    ? (selectedTsgoExecutable() ?? getExePath())
+    : hostTscTsExecutable();
 }
 
 /** tsgo's executable, from the `typescript` package, whichever checker compiles. */

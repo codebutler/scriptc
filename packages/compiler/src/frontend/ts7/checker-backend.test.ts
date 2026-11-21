@@ -14,7 +14,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { checkerBackend, tscTsExecutable, tscTsPlatformPackage } from "./checker-backend.js";
+import {
+  checkerBackend,
+  checkerCacheIdentity,
+  tscTsExecutable,
+  tscTsPlatformPackage,
+} from "./checker-backend.js";
 
 // The copy's name comes from randomBytes; `fixedRandom` makes it known. `writes`
 // collects the mode of each file writeSync writes to. A directory in
@@ -84,8 +89,20 @@ test("tsc-ts is the default checker, and SCRIPTC_CHECKER selects one", () => {
   expect(checkerBackend({ SCRIPTC_CHECKER: "tsc-ts" })).toBe("tsc-ts");
   expect(checkerBackend({ SCRIPTC_CHECKER: "tsgo" })).toBe("tsgo");
   expect(() => checkerBackend({ SCRIPTC_CHECKER: "tsc" })).toThrow(
-    'SCRIPTC_CHECKER must be tsgo or tsc-ts, not "tsc"',
+    'SCRIPTC_CHECKER must be tsgo, tsc-ts or an absolute TypeScript executable path, got "tsc"',
   );
+});
+
+test("the selected TypeScript executable contributes its identity to the build cache", () => {
+  const path = join(tempRoot(), "checker");
+  const env = { SCRIPTC_CHECKER: path };
+  writeFileSync(path, "first");
+  const first = checkerCacheIdentity(env);
+  expect(checkerBackend(env)).toBe("tsgo");
+  expect(first).toContain(path);
+  writeFileSync(path, "replacement");
+  expect(checkerCacheIdentity(env)).not.toBe(first);
+  expect(checkerCacheIdentity({ SCRIPTC_CHECKER: "tsgo" })).toBeUndefined();
 });
 
 test("tsc-ts platform packages are named for the host", () => {

@@ -28,6 +28,10 @@ test("native toolchain installation paths relocate with the manifest", () => {
     expect(loadNativeToolchain(path, { SCRIPTC_CHECKER: "tsgo" }).ts7Executable).toBe(
       join(root, "typescript/tsc"),
     );
+    const projectChecker = join(root, "project/tsc");
+    expect(loadNativeToolchain(path, { SCRIPTC_CHECKER: projectChecker }).ts7Executable).toBe(
+      projectChecker,
+    );
     expect(toolchain.helperExecutable).toBe(join(root, "llvm/bin/scriptc-llvm-codegen"));
     expect(toolchain.comptimeExecutable).toBe(join(root, "llvm/bin/scriptc-comptime"));
     expect(toolchain.runtimePackRoot).toBe(join(root, "runtime"));

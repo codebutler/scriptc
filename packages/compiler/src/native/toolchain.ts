@@ -8,6 +8,7 @@ import {
 } from "../backend/targets.js";
 import {
   checkerBackend,
+  selectedTsgoExecutable,
   tscTsExecutable,
   writeCheckerOnce,
   tscTsPlatformPackage,
@@ -232,7 +233,7 @@ export function loadNativeToolchain(
     // the working directory. SCRIPTC_CHECKER selects a checker.
     ts7Executable:
       checkerBackend(env) === "tsgo"
-        ? pathFrom(root, manifest.ts7)
+        ? (selectedTsgoExecutable(env) ?? pathFrom(root, manifest.ts7))
         : manifest.tsc_ts !== undefined
           ? distributionTscTs(pathFrom(root, manifest.tsc_ts), host.platform)
           : tscTsExecutable(

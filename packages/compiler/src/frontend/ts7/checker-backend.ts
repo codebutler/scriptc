@@ -13,12 +13,19 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+/** A caller may select a compatible native TypeScript API server by absolute
+ * path. A project does not implicitly select an executable. */
+export function selectedTsgoExecutable(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const value = env["SCRIPTC_CHECKER"];
+  return value && isAbsolute(value) ? value : undefined;
+}
 
 /** The TypeScript 7 API servers a compile can check with: tsc-ts, the default,
  * and tsgo from the `typescript` package, selected with `SCRIPTC_CHECKER=tsgo`.
- * Both serve the same API and give the same results. On Windows the Node host
+ * An absolute path selects a compatible tsgo from another release. On Windows the Node host
  * connects to either over a named pipe the server creates (rpc-process.ts). */
 export type CheckerBackend = "tsgo" | "tsc-ts";
 
@@ -26,8 +33,10 @@ export function checkerBackend(env: NodeJS.ProcessEnv = process.env): CheckerBac
   const value = env["SCRIPTC_CHECKER"];
   if (value === undefined || value === "") return "tsc-ts";
   if (value === "tsc-ts") return "tsc-ts";
-  if (value === "tsgo") return "tsgo";
-  throw new Error(`SCRIPTC_CHECKER must be tsgo or tsc-ts, not ${JSON.stringify(value)}`);
+  if (value === "tsgo" || selectedTsgoExecutable(env) !== undefined) return "tsgo";
+  throw new Error(
+    `SCRIPTC_CHECKER must be tsgo, tsc-ts or an absolute TypeScript executable path, got ${JSON.stringify(value)}`,
+  );
 }
 
 /** tsc-ts's platform package for a host: `@tsc-ts/linux-x64-gnu`,
@@ -57,11 +66,11 @@ export function hostIsMusl(): boolean {
   return hostMusl;
 }
 
-/** The checker's part of an executable cache key: the identity of the tsc-ts
- * executable, or undefined for tsgo, whose keys predate the choice. */
+/** The checker's part of an executable cache key: the selected executable's
+ * identity. The bundled tsgo retains its original cache key. */
 export function checkerCacheIdentity(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  if (checkerBackend(env) === "tsgo") return undefined;
-  const path = hostTscTsExecutable();
+  const path = checkerBackend(env) === "tsgo" ? selectedTsgoExecutable(env) : hostTscTsExecutable();
+  if (path === undefined) return undefined;
   const info = statSync(path);
   return JSON.stringify({
     path,
