@@ -52,8 +52,12 @@ const fallback: Ts7FileSystem = {
   getAccessibleEntries: () => undefined,
 };
 
+function selectedProject(snapshot: Snapshot, config: string) {
+  return snapshot.getProjects().find((project) => project.configFileName === config);
+}
+
 function programFacts(snapshot: Snapshot, config: string, path: string) {
-  const project = snapshot.getProject(config)!;
+  const project = selectedProject(snapshot, config)!;
   const file = project.program.getSourceFile(path)!;
   const checker = project.checker;
   const position = file.text.indexOf("answer");
@@ -139,7 +143,7 @@ test("production RPC bridge preserves pinned SDK parser/checker behavior", () =>
     expect(
       project.checker.getTypeAtLocation(variable.declarationList.declarations.nodes[0]!.name),
     ).toBe(first);
-    const expectedSource = expected.getProject(config)!.program.getSourceFile(path)!;
+    const expectedSource = expected.getConfiguredProject(config)!.program.getSourceFile(path)!;
     expect(source.statements.nodes.map((node) => [node.kind, node.pos, node.end])).toEqual(
       expectedSource.statements.map((node) => [node.kind, node.pos, node.end]),
     );
@@ -231,8 +235,8 @@ test("native semantic registries preserve project scope and snapshot lifetimes",
   const nodesOf = (list: unknown): readonly SdkNode[] =>
     Array.isArray(list) ? list : (list as { nodes: readonly SdkNode[] }).nodes;
   function facts(snapshot: Snapshot) {
-    const a = snapshot.getProject(firstConfig)!;
-    const b = snapshot.getProject(secondConfig)!;
+    const a = selectedProject(snapshot, firstConfig)!;
+    const b = selectedProject(snapshot, secondConfig)!;
     const answer = source.indexOf("answer");
     const symbolA = a.checker.getSymbolAtPosition(path, answer)!;
     const symbolB = b.checker.getSymbolAtPosition(path, answer)!;
