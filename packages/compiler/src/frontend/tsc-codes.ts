@@ -804,6 +804,33 @@ const jsArrayFieldAppend = (node: ts.Node, _d: ts.Diagnostic, program: ts.Progra
   );
 };
 
+/** A direct call to an unchecked JavaScript constructor with an object
+ * pattern. Its parameter already carries a checked-dynamic value (paramShape).
+ * A missing key is read from that value when the constructor destructures it. */
+const jsConstructorPatternArgument: NonNullable<Opinion["site"]> = (node, _d, program, checkJs) => {
+  const call = node.parent;
+  if (!call || !ts.isNewExpression(call) || !ts.isIdentifier(call.expression)) return false;
+  const args = call.arguments?.nodes;
+  if (!args) return false;
+  const index = args.indexOf(node as ts.Expression);
+  if (index < 0 || args.slice(0, index + 1).some(ts.isSpreadElement)) return false;
+  const checker = program.getTypeChecker();
+  const decl = checker.getResolvedSignature(call)?.declaration;
+  if (!decl || !ts.isConstructorDeclaration(decl) || !decl.body) return false;
+  const file = ts.getSourceFileOfNode(decl);
+  const param = decl.parameters.nodes[index];
+  return (
+    isJsSourceFileName(file.fileName) &&
+    !isCheckedJsSourceFile(file, checkJs ?? false) &&
+    checker.getSymbolAtLocation(call.expression)?.valueDeclaration === decl.parent &&
+    param !== undefined &&
+    !param.dotDotDotToken &&
+    !param.type &&
+    ts.isObjectBindingPattern(param.name) &&
+    !/@(?:param|type)\b/.test(file.text.slice(decl.pos, ts.tokenStartOfNode(param)))
+  );
+};
+
 /** Whether `node` writes a JavaScript accessor property whose setter is
  * declared in a JavaScript class (`this.depthTexture = texture` over a
  * `set depthTexture(value)` documented `@type {?DepthTexture}`): the value
@@ -1368,15 +1395,18 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // the storage follows the values the program writes to it
   // (analyzeJsWidenedBindings and analyzeJsWidenedFields), including a
   // JavaScript accessor pair's values and the elements a program appends to
-  // a JSDoc-typed array field. Every other 2739 site keeps its triage row.
+  // a JSDoc-typed array field. An unchecked JS constructor's inferred
+  // object-pattern parameter also receives the actual argument (paramShape).
   [
     2739,
     at(
-      jsStorageWriteTarget,
+      (node, d, p, checkJs) =>
+        jsStorageWriteTarget(node, d, p) || jsConstructorPatternArgument(node, d, p, checkJs),
       inCheckedJs(
-        WIDEN("the storage follows the values a JavaScript program writes to a typed target", [
+        WIDEN("JavaScript storage and unchecked constructor parameters carry the value supplied", [
           "tests/corpus/jsdoc-field-foreign-instance/main.js",
           "tests/corpus/js-frozen-object-reassignment.js",
+          "tests/corpus/js-constructor-pattern-argument.js",
           "tests/corpus/jsdoc-accessor-and-array-field-writes/main.ts",
         ]),
       ),

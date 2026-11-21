@@ -490,6 +490,20 @@ test("a value missing declared properties is not described as a Set argument", (
   expect(`${kept.message} ${kept.hint}`).not.toContain("'has'");
 });
 
+const constructorPattern = `class Options {
+  constructor({ first, second, third }) { console.log(first, second, third); }
+}
+new Options({ first: 1 });`;
+
+test("unchecked JavaScript constructors destructure partial arguments", () => {
+  expect(diagnostics(constructorPattern, 'import "./library.js";')).toEqual([]);
+});
+
+test("checked JavaScript constructors keep their missing-property diagnostics", () => {
+  const kept = diagnostics("// @ts-check\n" + constructorPattern, 'import "./library.js";');
+  expect(kept.some((diagnostic) => diagnostic.code === "SC1090")).toBe(true);
+});
+
 /* for-in's head is retyped by shipped JavaScript: the key string lands in a
  * binding declared to hold something else, and the right side is walked
  * whatever the checker inferred there. tsc reports TS2405/TS2407 only for a
