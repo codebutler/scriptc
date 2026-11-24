@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/declaration-backed-enum/mode.d.mts",
+  "<repo>/tests/corpus/declaration-backed-enum/main.ts"
+ ],
+ "diags": []
+}

@@ -67,6 +67,20 @@ function effectFreeReceiver(e: ts.Expression): boolean {
   return ts.isIdentifier(cur);
 }
 
+/** An enum declaration shipped beside JavaScript describes the exported
+ * object. Reads must observe that object's current properties. */
+function isImplementedEnumMember(lowerer: Lowerer, member: ts.EnumMember): boolean {
+  const decl = member.parent;
+  if (
+    !ts.isEnumDeclaration(decl) ||
+    !ts.isSourceFile(decl.parent) ||
+    !decl.parent.isDeclarationFile
+  )
+    return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+  return symbol !== undefined && lowerer.declarationTwinExportSymbolOf(symbol, null) !== null;
+}
+
 /** The access-site chokepoint, tried FIRST by both the property- and
  * element-access lowerings: claims enum member reads (fold to the constant)
  * and enum reverse-mapping reads. Null when the access is not enum-shaped
@@ -79,7 +93,12 @@ export function lowerEnumAccess(
     const sym = lowerer.checker.getSymbolAtLocation(expr.name);
     if (sym && sym.flags & ts.SymbolFlags.EnumMember) {
       const decl = sym.valueDeclaration;
-      if (decl && ts.isEnumMember(decl) && effectFreeReceiver(expr.expression)) {
+      if (
+        decl &&
+        ts.isEnumMember(decl) &&
+        effectFreeReceiver(expr.expression) &&
+        !isImplementedEnumMember(lowerer, decl)
+      ) {
         return lowerEnumMemberRead(lowerer, expr, decl);
       }
     }
@@ -123,7 +142,9 @@ export function lowerEnumAccess(
 export function isEnumMemberRead(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   if (lowerer.enumObjects.size === 0 || !ts.isIdentifier(access.name)) return false;
   const symbol = lowerer.checker.getSymbolAtLocation(access.name);
-  return symbol !== undefined && (symbol.flags & ts.SymbolFlags.EnumMember) !== 0;
+  if (!symbol || !(symbol.flags & ts.SymbolFlags.EnumMember)) return false;
+  const decl = symbol.valueDeclaration;
+  return !decl || !ts.isEnumMember(decl) || !isImplementedEnumMember(lowerer, decl);
 }
 
 /** Whether `E[key]` is a reverse lookup through a runtime number, which
