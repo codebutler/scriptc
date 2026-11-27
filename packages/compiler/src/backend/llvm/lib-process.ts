@@ -21,6 +21,11 @@ import { frameText } from "./frame-positions.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  // The shell command line reports DEP0190 on a next tick, so the loop runs
+  // even when nothing else in the program is asynchronous (the
+  // fs.existsSyncValue precedent for DEP0187). execFileSync's shell form is
+  // the case that reaches it without other asynchronous work.
+  if (e.fn === "child.shellCommand") host.usesTimers = true;
   if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
     const callbackArg = e.args[2];
     if (!callbackArg)
@@ -72,14 +77,23 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const envPairs = host.emitExpr(e.args[6]!);
     const timeout = host.emitExpr(e.args[7]!);
     const killSignal = host.emitExpr(e.args[8]!);
+    const signal = host.emitExpr(e.args[9]!);
+    const hasSignal = host.emitExpr(e.args[10]!);
+    // The abort-listener seam: the call sites pass a literal flag beside
+    // the value, since option evaluation can hold the value in a local.
+    let add = "null";
+    if (!(e.args[10]!.kind === "boolLit" && !e.args[10]!.value)) {
+      host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+      add = "@scr_events_add_abort_listener";
+    }
     const adapter = host.execFileThunkFor(cbT);
     host.usesTimers = true;
     const out = B.tmp();
     host.declare(
-      `declare ptr @scr_exec_file_opts(ptr, ptr, ptr, ptr, i1, ptr, i1, ptr, double, ptr)`,
+      `declare ptr @scr_exec_file_opts(ptr, ptr, ptr, ptr, i1, ptr, i1, ptr, double, ptr, ptr, i1 zeroext, ptr)`,
     );
     B.line(
-      `${out} = call ptr @scr_exec_file_opts(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name}, ptr ${cwd.name}, i1 ${hasEnv.name}, ptr ${envPairs.name}, double ${timeout.name}, ptr ${killSignal.name})`,
+      `${out} = call ptr @scr_exec_file_opts(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name}, ptr ${cwd.name}, i1 ${hasEnv.name}, ptr ${envPairs.name}, double ${timeout.name}, ptr ${killSignal.name}, ptr ${signal.name}, i1 ${hasSignal.name}, ptr ${add})`,
     );
     const value = host.own({ name: out, type: e.type });
     host.emitPendingCheck();
@@ -298,6 +312,15 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       );
     }
     return { name: "", type: e.type };
+  }
+  if (e.fn === "spawnRes.pid") {
+    // Node's spawnSync-result pid: the child's id, 0 when the spawn
+    // itself failed — a plain number, no union.
+    const recv = host.emitExpr(e.args[0]!);
+    host.declare(`declare double @scr_spawn_res_pid(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call double @scr_spawn_res_pid(ptr ${recv.name})`);
+    return { name: out, type: e.type };
   }
   if (e.fn === "spawnRes.status" || e.fn === "child.pid" || e.fn === "child.exitCode") {
     // `number | null` / `number | undefined`, constructed type-

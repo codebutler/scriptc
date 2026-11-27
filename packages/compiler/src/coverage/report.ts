@@ -23,6 +23,7 @@ import {
   type TypeClaimEnvelope,
 } from "../diagnostics/envelope.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
+import { performanceSummary } from "../diagnostics/dynamic-tier.js";
 import {
   dynamicSlotLabel,
   isDynamicSlotCode,
@@ -427,14 +428,14 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     );
     renderRows(groupBlockers(divergences), YELLOW);
   };
-  // The performance warning: its message names the functions.
+  // The performance warning: one line. Its function list stays in the
+  // diagnostic for --print=diagnostics, and --explain-dynamic names the
+  // functions and their causes, so the report does not repeat them.
   const performance = (input.performance ?? []).filter((d) => !isDynamicSlotCode(d.code));
   const renderPerformance = () => {
     for (const d of performance) {
       out.push("");
-      const [head, ...rest] = d.message.split("\n");
-      out.push(`  ${c(YELLOW, "untyped and likely hot")}   ${head}`);
-      for (const line of rest) out.push(`  ${line}`);
+      out.push(`  ${c(YELLOW, "untyped and likely hot")}   ${performanceSummary(d)}`);
       if (d.hint !== undefined) out.push(`    ${c(DIM, `hint: ${d.hint}`)}`);
     }
   };
@@ -1088,7 +1089,7 @@ function renderNodeIslands(
 ): void {
   const n = report.islands.length + report.userModules.length;
   out.push(
-    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(would-be, report-only: the build is unchanged; --node-islands=${report.policy})`)}`,
+    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(would-be, report-only: the build is unchanged; a build needs the libnode pack for its target; --node-islands=${report.policy})`)}`,
   );
   if (n === 0) out.push(`    ${c(DIM, "none")}`);
   const widest = Math.max(0, ...report.islands.map((i) => i.class.length));

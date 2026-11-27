@@ -61,6 +61,11 @@ typedef struct ScrHttpH2Ops {
 void scr_http_set_h2_ops(const ScrHttpH2Ops *ops);
 void scr_http_set_h2_request_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                                void *fn, bool once));
+/* The server-side 'checkContinue'/'checkExpectation' registration for an h2
+ * ctx: scr_http2.c owns it (the h2 dispatch, and the HTTP/1 parser behind an
+ * allowHTTP1 server). */
+void scr_http_set_h2_check_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
+                                             void *fn, bool once, bool expectation));
 void scr_http_set_h2_connect_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                                void *h1_fn, void *h2_fn, bool once));
 void scr_http_set_h2_upgrade_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
@@ -127,6 +132,8 @@ void scr_http2_stream_undef_call(ScrStr *member);
 void scr_http_server_on_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once);
 void scr_http1_ctx_on_request(void *ctx, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
                               ScrNetOnce *shared_once /*moves, nullable*/);
+void scr_http1_ctx_on_check(void *ctx, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
+                            bool expectation, ScrNetOnce *shared_once /*moves, nullable*/);
 void scr_http1_ctx_on_connect(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once,
                               ScrNetOnce *shared_once /*moves, nullable*/);
 void scr_http1_ctx_on_upgrade(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
@@ -444,6 +451,9 @@ void scr_http_client_on_connect(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, S
 /* http.setMaxIdleHTTPParsers(max): validates like Node; there is no parser
  * pool to size. */
 void scr_http_set_max_idle_parsers(const ScrDyn *max /*borrowed*/);
+/* http.setGlobalProxyFromEnv(proxyEnv?): configures the module's environment
+ * proxy (Node 24). An undefined argument reads the process environment. */
+void scr_http_set_global_proxy_from_env(const ScrDyn *env /*borrowed*/);
 void scr_http_client_on_error(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http_client_on_timeout(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
@@ -462,7 +472,15 @@ ScrHttpClientReq *scr_http_request_ex(ScrStr *host /*borrowed*/, double port,
                                        double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                        bool auto_end, ScrClosure *cb /*moves, nullable*/,
                                        ScrHttpRespFn fn, int default_port,
-                                       void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx); /* +1 */
+                                       void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx);
+/* The same, for a caller that already chose its transport (fetch's proxy):
+ * the module's proxy policy does not apply to it. */
+ScrHttpClientReq *scr_http_request_ex_direct(ScrStr *host /*borrowed*/, double port,
+                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                              double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                              bool auto_end, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn, int default_port,
+                                              void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx); /* +1 */
 /* The URL-string client form (http.get('http://host:port/path')): parses
  * through the WHATWG unit; throws catchably on an unparsable input
  * ("Invalid URL") or a non-http scheme (ERR_INVALID_PROTOCOL) and
@@ -501,6 +519,8 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
                                              ScrStr *pool_key /*borrowed, nullable: https TLS options*/); /* +1 */
 /* http.globalAgent / https.globalAgent: borrowed, and as a +1 value. */
 const ScrDyn *scr_http_global_agent(bool secure);
+/* The same, only when the program already created it (no allocation). */
+const ScrDyn *scr_http_global_agent_existing(bool secure);
 /* fetch()'s client request for a direct connection: through fetch's own
  * keep-alive agent, which reuses an idle connection with the same host,
  * port and pool_key (+1). */

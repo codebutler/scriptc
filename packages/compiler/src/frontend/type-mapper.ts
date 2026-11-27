@@ -1763,10 +1763,17 @@ export function perfEntryShape(shapes: ShapeRegistry, unions: UnionRegistry): st
       { name: "entryType", type: STRING },
       { name: "name", type: STRING },
       { name: "startTime", type: F64 },
-      ...PERF_RESOURCE_FIELDS.map((field) => ({
-        name: field.name,
-        type: field.type === "number" ? F64 : STRING,
-      })),
+      ...PERF_RESOURCE_FIELDS.map((field) => {
+        /* Node answers undefined for a timing the caller's timing info
+         * omits — every numeric field, and the connection's negotiated
+         * protocol — even though the declaration types them number/string. */
+        const optional = field.type === "number" || field.name === "nextHopProtocol";
+        const base = field.type === "number" ? F64 : STRING;
+        return {
+          name: field.name,
+          type: optional ? (withUndefinedArm(base, unions) ?? base) : base,
+        };
+      }),
     ].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     false,
     undefined,
@@ -6421,6 +6428,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
         (isDeclaredInAmbientModule(d, "dns") || isDeclaredInAmbientModule(d, "dns/promises")),
+    )
+  ) {
+    return DYN;
+  }
+  // cluster.Worker: the runtime's worker handle (scr_cluster.c), a
+  // checked-dynamic value whose members dispatch there. @types/node
+  // declares it inside `namespace cluster`, so the enclosing ambient
+  // module names it.
+  if (
+    psym !== undefined &&
+    psymName === "Worker" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "cluster"),
     )
   ) {
     return DYN;
