@@ -806,16 +806,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         case "shell":
           if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
             // Node joins [command, ...args] with single spaces and warns
-            // DEP0190 for a non-empty list; a native build has no warning
-            // channel, so it refuses the form instead of dropping the
-            // warning Node prints.
-            if (!staticallyEmptyArgs(expr.arguments.nodes[1])) {
-              lowerer.noLowering(
-                "spawnSync with shell enabled and separate arguments",
-                expr.arguments.nodes[1]!,
-                "put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)",
-              );
-            }
+            // DEP0190 for a non-empty list: the runtime does both.
             shell = boolLit(true, loc);
             extOptions = true;
             plain = false;
@@ -1643,7 +1634,6 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let errFd: IrExpr = numLit(0, loc);
   let detached: IrExpr = boolLit(false, loc);
   let shell: IrExpr = boolLit(false, loc);
-  let shellEnabled = false;
   // Node's spawn-side options, which the SCR_CHILD_CP_OPTIONS build
   // implements: `timeout` (0 = none), `killSignal` and `signal`. Any of
   // them switches the launch to cp.spawnArmed.
@@ -1868,7 +1858,6 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
         case "shell":
           if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
             shell = boolLit(true, loc);
-            shellEnabled = true;
             plain = false;
           } else if (m.value.kind === ts.SyntaxKind.FalseKeyword) {
             shell = boolLit(false, loc);
@@ -1940,18 +1929,6 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   if (!sawStdio) {
     inMode = outMode = errMode = numLit(3, loc);
     plain = false;
-  }
-  // Node joins [command, ...args] with single spaces for the shell form, and
-  // reports DEP0190 ("passing args to a child process with shell option
-  // true ... the arguments are not escaped, only concatenated") on stderr.
-  // A native build has no warning channel, so it refuses the form rather
-  // than silently skipping the warning Node prints.
-  if (shellEnabled && !staticallyEmptyArgs(argsNode)) {
-    lowerer.noLowering(
-      "spawn with shell enabled and separate arguments",
-      argsNode ?? expr,
-      "put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)",
-    );
   }
   const argv = lowerChildArgsArg(lowerer, argsNode, loc);
   if (plain) {
@@ -2352,6 +2329,7 @@ export function lowerExecFileCall(
   let envPairs: IrExpr | null = null;
   let timeout: IrExpr | null = null;
   let killSignal: IrExpr | null = null;
+  let signal: IrExpr | null = null;
   let maxBuffer: IrExpr | null = null;
   // The options that are evaluated, as written: `cwd` is the launch's
   // fifth argument.
@@ -2423,6 +2401,12 @@ export function lowerExecFileCall(
           killSignal = { kind: "strLit", value: t.value, type: STRING, loc };
           optionSteps.push(8);
         }
+      } else if (member.name === "signal") {
+        // Node validates the value at the launch (an AbortSignal instance)
+        // and aborts the call through it; the value rides the checked-
+        // dynamic lane so one runtime check covers every spelling.
+        signal = lowerer.lowerExprExpecting(member.value, DYN);
+        optionSteps.push(9);
       } else if (member.name === "windowsHide" || member.name === "windowsVerbatimArguments") {
         // Windows-only presentation and quoting: Node reads neither on
         // POSIX. This form binds no member values, so a value whose
@@ -2443,7 +2427,7 @@ export function lowerExecFileCall(
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
+          "encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, signal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
         );
       }
     }
@@ -2452,23 +2436,61 @@ export function lowerExecFileCall(
   const shellForm = shell || execShell;
   const cmd: IrExpr = shellForm ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : first;
   // Node joins [file, ...args] with single spaces for the shell form and
-  // reports DEP0190 on stderr; a native build has no warning channel, so it
-  // refuses separate arguments here rather than silently skipping it.
-  if (
-    execShell &&
-    !staticallyEmptyArgs(expr.arguments.nodes.length >= 3 ? expr.arguments.nodes[1] : undefined)
-  ) {
-    lowerer.noLowering(
-      `${what} with shell enabled and separate arguments`,
-      expr.arguments.nodes[1]!,
-      "put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)",
-    );
+  // reports DEP0190 on stderr; the runtime's shell-command call does both.
+  const shellArgsNode = expr.arguments.nodes.length >= 3 ? expr.arguments.nodes[1] : undefined;
+  let shellCommand: IrExpr = first;
+  if (execShell && !staticallyEmptyArgs(shellArgsNode)) {
+    const file = lowerer.declareHiddenLocal("%shellFile", STRING);
+    const list = lowerer.declareHiddenLocal("%shellArgs", arrayOf(STRING));
+    const fileRef = varRef(file.id, STRING, loc);
+    const listRef = varRef(list.id, arrayOf(STRING), loc);
+    shellCommand = {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: file.id, init: first, loc },
+        {
+          kind: "varDecl",
+          localId: list.id,
+          init: lowerChildArgsArg(lowerer, shellArgsNode, loc),
+          loc,
+        },
+        // Node validates the file (empty, NUL bytes) and each argument
+        // (NUL bytes) BEFORE it joins them, so an empty file is the
+        // ERR_INVALID_ARG_VALUE it throws, never a command run.
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "cp.checkArgs",
+            args: [
+              numLit(0, loc),
+              fileRef,
+              listRef,
+              { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
+              strLit("", loc),
+            ],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      result: {
+        kind: "libCall",
+        fn: "child.shellCommand",
+        args: [fileRef, listRef],
+        type: STRING,
+        loc,
+      },
+      type: STRING,
+      loc,
+    };
   }
   let argv: IrExpr;
   if (shellForm) {
     argv = {
       kind: "arrayLit",
-      elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, first],
+      elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, shellCommand],
       type: arrayOf(STRING),
       loc,
     };
@@ -2533,7 +2555,7 @@ export function lowerExecFileCall(
   // The source evaluates the file or command, the argument list, the
   // options as written, and the callback last.
   const sourceOrder: ChildEvalStep[] = [0, 1, ...optionSteps, 2];
-  if (envPairs !== null || timeout !== null || killSignal !== null) {
+  if (envPairs !== null || timeout !== null || killSignal !== null || signal !== null) {
     // The full option shape (the SCR_CHILD_CP_OPTIONS build): env REPLACES
     // the environment (the flag says whether it is present at all),
     // timeoutMs 0 means no deadline, and "" is the SIGTERM default.
@@ -2547,6 +2569,8 @@ export function lowerExecFileCall(
       envPairs ?? { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
       timeout ?? numLit(0, loc),
       killSignal ?? strLit("", loc),
+      signal ?? dynUndefinedExpr(loc),
+      boolLit(signal !== null, loc),
     ];
     return withChildArgsCheck(
       lowerer,

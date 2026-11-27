@@ -711,20 +711,22 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   }
   if (ts.isAsExpression(expr) || ts.isTypeAssertion(expr)) return lowerer.lowerAsExpression(expr);
   if (ts.isVoidExpression(expr)) {
-    // The operand runs for effect; the explicit operator always yields
-    // undefined. Reuse statement lowering for assignment, short circuit,
-    // exception propagation, and owned-result disposal.
-    const result: IrExpr = {
-      kind: "unitLit",
-      unit: "undefined",
-      type: UNDEFINED_T,
-      loc: locOf(expr),
-    };
-    if (sideEffectFreeOptionValue(expr.expression)) return result;
+    // `void e` in VALUE position is the undefined value after evaluating
+    // e. A side-effect-free operand drops entirely (`void 0` — the
+    // classic undefined spelling; the surrounding slot's coercion wraps
+    // the unit like any bare `undefined`).
+    if (sideEffectFreeOptionValue(expr.expression)) {
+      return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) };
+    }
+    // An effectful operand runs for its effects and the expression answers
+    // the undefined value: a sequence carries the statement before the
+    // result, exactly like statement-position `void e`. Reuse statement
+    // lowering for assignment, short circuit, exception propagation, and
+    // owned-result disposal.
     return {
       kind: "seqExpr",
       stmts: [lowerer.lowerExprStatement(expr.expression)],
-      result,
+      result: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) },
       type: UNDEFINED_T,
       loc: locOf(expr),
     };
@@ -2443,6 +2445,16 @@ export function runtimeOptionalLocalOf(lowerer: Lowerer, node: ts.Expression): I
  * value; ref arms always truthy). A `void`-typed operand reaches here
  * only where it is `undefined` at run time, so ToBoolean of it is false:
  * the operand evaluates once for its effects, as Node evaluates it. */
+/** The statements that run `e` for its effects, for a unit-typed expression
+ * whose answer a surrounding lowering keeps without evaluating it: a
+ * sequence's own statements and, recursively, the effects of its result (a
+ * nested `void` sequence is a sequence whose result is one). */
+export function unitEffectStatements(e: IrExpr): IrStmt[] {
+  if (e.kind === "seqExpr") return [...e.stmts, ...unitEffectStatements(e.result)];
+  if (e.kind === "unitLit") return [];
+  return [{ kind: "exprStmt", expr: e, loc: e.loc }];
+}
+
 export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): IrExpr {
   if (e.type.kind === "bool") return e;
   if (e.type.kind === "f64" || e.type.kind === "string") {
@@ -2468,10 +2480,14 @@ export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): Ir
     return { kind: "toBool", operand: e, type: BOOL, loc: e.loc };
   }
   // Bare unit values (undefined/null literals, the capability-probe
-  // reads that answer them): ToBoolean is constantly false. Units have
-  // no effectful producers, so folding the read away loses nothing.
+  // reads that answer them): ToBoolean is constantly false. A sequence
+  // still runs its effects (`Boolean(void f())` calls f), so only its
+  // result folds.
   if (isUnitType(e.type)) {
-    return { kind: "boolLit", value: false, type: BOOL, loc: e.loc };
+    const folded: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc: e.loc };
+    const effects = unitEffectStatements(e);
+    if (effects.length === 0) return folded;
+    return { kind: "seqExpr", stmts: effects, result: folded, type: BOOL, loc: e.loc };
   }
   // A `void`-typed operand (ADMITTED `if (fn())` / `!fn()` in an unchecked
   // JavaScript source, tsc-codes.ts TS1345): the row admits only operands

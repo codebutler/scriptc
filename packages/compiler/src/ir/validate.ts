@@ -4714,6 +4714,19 @@ function validateFunction(
         err(`libCall ${e.fn} must take (readable, flags) and return a web stream`, e.loc);
       return true;
     }
+    if (e.fn === "webstream.toWebReadableOpts") {
+      // Readable.toWeb with a strategy: (readable, flags, strategy) → a web
+      // ReadableStream.
+      if (
+        e.args.length !== 3 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.args[2]?.type.kind !== "dyn" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (readable, flags, strategy) and return a web stream`, e.loc);
+      return true;
+    }
     if (e.fn === "webstream.duplexFromWebOpts") {
       // Duplex.fromWeb with options: (pair, flags, hwm, signal, encoding) →
       // a Duplex.
@@ -4781,7 +4794,30 @@ function validateFunction(
         err(`libCall ${e.fn} must take (value, flags) and return a web stream`, e.loc);
       return true;
     }
+    if (e.fn === "webstream.toWebReadableDynOpts") {
+      if (
+        e.args.length !== 3 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.args[2]?.type.kind !== "dyn" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (value, flags, strategy) and return a web stream`, e.loc);
+      return true;
+    }
 
+    if (e.fn === "webstream.writableToWebDyn") {
+      // Writable.toWeb over a checked-dynamic value: (value, flags) → a web
+      // WritableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (value, flags) and return a web stream`, e.loc);
+      return true;
+    }
     if (e.fn === "webstream.writableToWeb") {
       // Writable.toWeb: (writable, flags) → a web WritableStream.
       if (
@@ -5106,11 +5142,25 @@ function validateFunction(
           if (e.fn === "http.serverOnConnect" && p1?.kind === "union") {
             const def = unions.get(p1.unionId);
             if (!def || !def.arms.some((a) => a.kind === "netSocket")) ok = false;
+          } else if (!(e.fn === "http.serverOnConnect" && p1?.kind === "dyn")) {
+            ok = false;
+          }
+        }
+        if (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8")) {
+          if (e.fn === "http.serverOnConnect" && p2.kind === "dyn") {
+            /* the adapted untyped listener's dynamic head slot */
+          } else if (e.fn === "http.serverOnConnect" && p2.kind === "union") {
+            const def = unions.get(p2.unionId);
+            if (
+              !def ||
+              !def.arms.some((a) => a.kind === "bytes" && a.elem === "u8") ||
+              !def.arms.some((a) => a.kind === "undefinedT")
+            )
+              ok = false;
           } else {
             ok = false;
           }
         }
-        if (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8")) ok = false;
       }
       if (!ok) {
         err(`libCall ${e.fn} callback shape (frontend must fence)`, e.loc);
@@ -6566,6 +6616,7 @@ function validateFunction(
         e.fn === "writable.end" ||
         e.fn === "writable.endEcb" ||
         e.fn === "readable.setEncoding" ||
+        e.fn === "readable.setEncodingOption" ||
         e.fn === "readable.pushEncoding" ||
         e.fn === "readable.encodingName" ||
         e.fn === "stream.objectMode" ||

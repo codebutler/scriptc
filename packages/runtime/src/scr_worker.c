@@ -102,7 +102,7 @@ static _Atomic int scr_worker_stats_mode = -1;
 static bool scr_worker_stats(void) {
   int mode = atomic_load_explicit(&scr_worker_stats_mode, memory_order_relaxed);
   if (mode < 0) {
-    const char *value = getenv("SCRIPTC_WORKER_STATS");
+    const char *value = scr_getenv("SCRIPTC_WORKER_STATS");
     mode = value != NULL && value[0] == '1';
     atomic_store_explicit(&scr_worker_stats_mode, mode, memory_order_relaxed);
   }
@@ -431,6 +431,9 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
    * audit, which must see nothing this thread's worker events still hold. */
   void (*events_detach)(void) = atomic_load_explicit(&scr_worker_events_detach, memory_order_relaxed);
   if (events_detach) events_detach();
+  /* The thread's bucket-map view is thread-local: free it with the thread
+   * rather than only at process exit. */
+  if (scr_worker_bucket_exit) scr_worker_bucket_exit();
   scr_context_cleanup();
   /* Frees the group arenas and chunks the thread kept for reuse before the
    * parent sees the exit. */

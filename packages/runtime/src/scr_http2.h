@@ -85,6 +85,10 @@ void scr_http2_session_on_close(ScrH2Session *s, ScrClosure *cb /*moves*/, bool 
 void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http2_server_on_session_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                        ScrH2SessionErrorFn fn, bool once);
+/* The Expect: 100-continue listeners; the first one also places the
+ * compatibility dispatch among the 'stream' listeners. */
+void scr_http2_server_on_check_continue(ScrNetServer *s, ScrClosure *cb /*moves*/,
+                                         ScrHttpReqFn fn, bool once);
 void scr_http2_session_error_thunk0(ScrClosure *cb, ScrStr *msg, ScrH2Session *session);
 void scr_http2_session_error_thunk1(ScrClosure *cb, ScrStr *msg, ScrH2Session *session);
 void scr_http2_session_error_thunk2(ScrClosure *cb, ScrStr *msg, ScrH2Session *session);
@@ -124,6 +128,21 @@ ScrNetSocket *scr_http2_session_socket(ScrH2Session *s); /* +1, NULL after teard
 
 /* stream */
 void scr_http2_stream_respond(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/, bool end_stream);
+/* respondWithFile/respondWithFD: the open/fstat/statCheck run on a turn of
+ * their own (Node's fs callbacks), then the file's bytes (offset, length;
+ * -1 = from the start / to EOF) stream as the peer's windows open, with
+ * END_STREAM (deferred for waitForTrailers). A failed open/stat reports
+ * the fs error on the stream; a failed descriptor read resets it with
+ * NGHTTP2_INTERNAL_ERROR, as Node does. `check` moves in (nullable). */
+void scr_http2_stream_respond_with_file(ScrH2Stream *st, ScrStr *path /*borrowed*/,
+                                       ScrArr *pairs /*borrowed, nullable*/, double offset,
+                                       double length, bool wait_trailers,
+                                       ScrDyn *check /*borrowed, nullable*/,
+                                       ScrDyn *on_error /*borrowed, nullable*/);
+void scr_http2_stream_respond_with_fd(ScrH2Stream *st, double fd, ScrArr *pairs /*borrowed, nullable*/,
+                                      double offset, double length, bool wait_trailers,
+                                      ScrDyn *check /*borrowed, nullable*/,
+                                      ScrDyn *on_error /*borrowed, nullable*/);
 /* respond(headers, { endStream, waitForTrailers }): a waiting response's
  * HEADERS carries no END_STREAM; the trailer block ends the stream after
  * 'wantTrailers'. */
@@ -161,7 +180,20 @@ bool scr_http2_stream_destroyed(ScrH2Stream *st);
 bool scr_http2_stream_closed(ScrH2Stream *st);
 bool scr_http2_stream_aborted(ScrH2Stream *st);
 bool scr_http2_stream_pending(ScrH2Stream *st);
+/* END_STREAM rode the initial HEADERS block (no body followed). */
+bool scr_http2_stream_end_after_headers(ScrH2Stream *st);
+/* Bytes buffered for the writable side (flow-control withheld). */
+double scr_http2_stream_buffer_size(ScrH2Stream *st);
+/* Http2ServerRequest.authority/scheme pseudo-headers, +1 (NULL = absent). */
+ScrStr *scr_http2_req_authority(ScrHttpReq *r);
+ScrStr *scr_http2_req_scheme(ScrHttpReq *r);
 bool scr_http2_stream_headers_sent(ScrH2Stream *st);
+/* sentHeaders/sentInfoHeaders/sentTrailers as the dyn records the stream
+ * holds (undefined before a block was sent), and the state snapshot. */
+ScrDyn *scr_http2_stream_sent_headers(ScrH2Stream *st);
+ScrDyn *scr_http2_stream_sent_info_headers(ScrH2Stream *st);
+ScrDyn *scr_http2_stream_sent_trailers(ScrH2Stream *st);
+ScrDyn *scr_http2_stream_state(ScrH2Stream *st);
 bool scr_http2_req_complete(ScrHttpReq *r);
 /* Every value `name` has in a received pairs array, in order (the array a
  * headers object holds for set-cookie). */
@@ -187,6 +219,12 @@ void scr_net_sock_set_native_established(ScrNetSocket *s, ScrNetNativeEventFn fn
 
 /* Registers the h2 session/stream dyn handle ops (the emitted main()
  * calls it when the unit is linked — the scr_net_dyn_install story). */
+/* Http2ServerResponse.statusMessage: always "" and a write warns once
+ * (RFC 7540 has no reason phrase). `value` was already evaluated. */
+void scr_http2_status_message_unsupported(ScrHttpRes *res /*borrowed*/,
+                                           const struct ScrDyn *value /*borrowed, nullable*/);
+void scr_http2_status_message_read(ScrHttpRes *res /*borrowed*/);
+
 void scr_http2_dyn_install(void);
 
 #ifdef SCR_RC_AUDIT
