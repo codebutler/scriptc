@@ -66,29 +66,29 @@ export function holdsConstructorFunction(lowerer: Lowerer, type: IrType): boolea
   }
 }
 
-function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null): boolean {
+function holds(lowerer: Lowerer, type: IrType, visited: Set<string> | null): boolean {
   switch (type.kind) {
     case "func": {
       if (type.argumentsPresence === true) return true;
-      for (const param of type.params) if (holds(lowerer, param, visiting)) return true;
-      return holds(lowerer, type.ret, visiting);
+      for (const param of type.params) if (holds(lowerer, param, visited)) return true;
+      return holds(lowerer, type.ret, visited);
     }
     case "array":
     case "set":
-      return holds(lowerer, type.elem, visiting);
+      return holds(lowerer, type.elem, visited);
     case "map":
-      return holds(lowerer, type.key, visiting) || holds(lowerer, type.value, visiting);
+      return holds(lowerer, type.key, visited) || holds(lowerer, type.value, visited);
     case "promise":
-      return holds(lowerer, type.inner, visiting);
+      return holds(lowerer, type.inner, visited);
     case "generator":
       return (
-        holds(lowerer, type.yieldT, visiting) ||
-        holds(lowerer, type.retT, visiting) ||
-        holds(lowerer, type.nextT, visiting)
+        holds(lowerer, type.yieldT, visited) ||
+        holds(lowerer, type.retT, visited) ||
+        holds(lowerer, type.nextT, visited)
       );
     case "record": {
       const shapeId = type.shapeId;
-      return named(lowerer, `r:${shapeId}`, visiting, (inner) => {
+      return named(lowerer, `r:${shapeId}`, visited, (inner) => {
         const shape = lowerer.shapes.get(shapeId);
         if (shape === undefined) return false;
         for (const field of shape.fields) if (holds(lowerer, field.type, inner)) return true;
@@ -97,7 +97,7 @@ function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null): bo
     }
     case "union": {
       const unionId = type.unionId;
-      return named(lowerer, `u:${unionId}`, visiting, (inner) => {
+      return named(lowerer, `u:${unionId}`, visited, (inner) => {
         const arms = lowerer.unions.get(unionId)?.arms ?? [];
         for (const arm of arms) if (holds(lowerer, arm, inner)) return true;
         return false;
@@ -109,7 +109,7 @@ function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null): bo
       if (fields === undefined) return false;
       // A class gains fields while it is collected: the answer is kept for
       // the fields it was given for.
-      return named(lowerer, `c:${className}:${fields.size}`, visiting, (inner) => {
+      return named(lowerer, `c:${className}:${fields.size}`, visited, (inner) => {
         for (const field of fields.values()) if (holds(lowerer, field, inner)) return true;
         return false;
       });
@@ -120,23 +120,29 @@ function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null): bo
 }
 
 /** The answer for a named type (a record shape, a union, a class), kept in
- * Lowerer.constructorHolders. A type met again while it is being answered
- * holds nothing new: the rest of the walk decides. An answer found under
- * such a cut is not kept unless it is a yes. */
+ * Lowerer.constructorHolders. One walk visits each named type once: a type
+ * met again in the same walk, still being answered or already answered no,
+ * holds nothing new, and the rest of the walk decides. The question is
+ * reachability (a type holds a constructor when any type it reaches does), so
+ * a yes is kept as soon as it is found, and when the walk's first type
+ * answers no, nothing it visited reaches a constructor and every type it
+ * visited is kept as a no. A no found under a cut is not kept until then:
+ * keeping only the first type's no made every later walk explore the shared
+ * types again, exponential on a large program's graph of shapes and unions. */
 function named(
   lowerer: Lowerer,
   key: string,
-  visiting: Set<string> | null,
-  answer: (visiting: Set<string>) => boolean,
+  visited: Set<string> | null,
+  answer: (visited: Set<string>) => boolean,
 ): boolean {
   const known = lowerer.constructorHolders.get(key);
   if (known !== undefined) return known;
-  if (visiting !== null && visiting.has(key)) return false;
-  const inner = visiting ?? new Set<string>();
-  inner.add(key);
-  const result = answer(inner);
-  inner.delete(key);
-  if (result || inner.size === 0) lowerer.constructorHolders.set(key, result);
+  if (visited !== null && visited.has(key)) return false;
+  const walk = visited ?? new Set<string>();
+  walk.add(key);
+  const result = answer(walk);
+  if (result) lowerer.constructorHolders.set(key, true);
+  else if (visited === null) for (const seen of walk) lowerer.constructorHolders.set(seen, false);
   return result;
 }
 
